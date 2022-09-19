@@ -619,8 +619,8 @@ struct State2 {
     template<typename F>
     std::pair<bool, Rect> choose_greedy(const F& pred) const {
         vector<Rect> cands;
-        for (int y = 0; y < input->N; y++) {
-            for (int x = 0; x < input->N; x++) {
+        for (int y = 1; y <= input->N; y++) {
+            for (int x = 1; x <= input->N; x++) {
                 if (has_point[y][x]) continue;
                 Point p0(x, y);
                 for (int dir = 0; dir < 8; dir++) {
