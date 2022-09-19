@@ -232,6 +232,15 @@ std::istream& operator>>(std::istream& in, Point& p) {
     return in;
 }
 
+inline int weight(int x, int y, int N) {
+    int dx = x - N / 2, dy = y - N / 2;
+    return dx * dx + dy * dy + 1;
+}
+
+inline int weight(const Point& p, int N) {
+    return weight(p.x, p.y, N);
+}
+
 using Rect = array<Point, 4>;
 
 struct Input;
@@ -239,11 +248,15 @@ using InputPtr = std::shared_ptr<Input>;
 struct Input {
     int N;
     vector<Point> ps;
+    int S, Q;
     Input(std::istream& in) {
         int M;
         in >> N >> M;
         ps.resize(M);
         in >> ps;
+        S = Q = 0;
+        for (int y = 0; y < N; y++) for (int x = 0; x < N; x++) S += weight(x, y, N);
+        for (const auto& [x, y] : ps) Q += weight(x, y, N);
     }
 };
 
@@ -254,13 +267,20 @@ struct State {
     InputPtr input;
     vector<vector<bool>> has_point;
     vector<vector<array<bool, 8>>> used;
+    vector<Rect> rects;
+    int weight_sum;
 
     State(InputPtr input) : input(input) {
         has_point.resize(input->N, std::vector<bool>(input->N, false));
         used.resize(input->N, std::vector<array<bool, 8>>(input->N));
+        weight_sum = input->Q;
         for (const auto& [x, y] : input->ps) {
             has_point[y][x] = true;
         }
+    }
+
+    int eval() const {
+        return (int)round(1e6 * (input->N * input->N) / input->ps.size() * weight_sum / input->S);
     }
     
     string check_move(const Rect& rect) const {
@@ -308,26 +328,14 @@ struct State {
         return "";
     }
 
-    bool check_move_fast(const Rect& rect) const {
-        for (int i = 1; i < 4; i++) {
-            if (!has_point[rect[i].y][rect[i].x]) {
-                return false;
-            }
-        }
-        if (has_point[rect[0].y][rect[0].x]) {
-            return false;
-        }
+    int check_move_fast(const Rect& rect) const {
+        for (int i = 1; i < 4; i++) if (!has_point[rect[i].y][rect[i].x]) return 0;
+        if (has_point[rect[0].y][rect[0].x]) return 0;
         int dx01 = rect[1].x - rect[0].x, dy01 = rect[1].y - rect[0].y;
         int dx03 = rect[3].x - rect[0].x, dy03 = rect[3].y - rect[0].y;
-        if (dx01 * dx03 + dy01 * dy03 != 0) {
-            return false;
-        }
-        if (dx01 != 0 && dy01 != 0 && abs(dx01) != abs(dy01)) {
-            return false;
-        }
-        if (rect[1].x + dx03 != rect[2].x || rect[1].y + dy03 != rect[2].y) {
-            return false;
-        }
+        if (dx01 * dx03 + dy01 * dy03 != 0) return 0;
+        if (dx01 != 0 && dy01 != 0 && abs(dx01) != abs(dy01)) return 0;
+        if (rect[1].x + dx03 != rect[2].x || rect[1].y + dy03 != rect[2].y) return 0;
         for (int i = 0; i < 4; i++) {
             auto [x, y] = rect[i];
             auto [tx, ty] = rect[(i + 1) % 4];
@@ -337,24 +345,20 @@ struct State {
             for (dir = 0; dir < 8; dir++) if (dx8[dir] == dx && dy8[dir] == dy) break;
             assert(dir != -1);
             while (x != tx || y != ty) {
-                if ((rect[i].x != x || rect[i].y != y) && has_point[y][x]) {
-                    return false;
-                }
-                if (used[y][x][dir]) {
-                    return false;
-                }
+                if ((rect[i].x != x || rect[i].y != y) && has_point[y][x]) return 0;
+                if (used[y][x][dir]) return 0;
                 x += dx;
                 y += dy;
-                if (used[y][x][dir ^ 4]) {
-                    return false;
-                }
+                if (used[y][x][dir ^ 4]) return 0;
             }
         }
-        return true;
+        return weight(rect[0], input->N);
     }
 
     void apply_move(const Rect& rect) {
+        rects.push_back(rect);
         has_point[rect[0].y][rect[0].x] = true;
+        weight_sum += weight(rect[0], input->N);
         for (int i = 0; i < 4; i++) {
             auto [x, y] = rect[i];
             auto [tx, ty] = rect[(i + 1) % 4];
@@ -372,8 +376,8 @@ struct State {
         }
     }
 
-    vector<Rect> enum_moves(int count_limit = INT_MAX) const {
-        vector<Rect> res;
+    vector<std::pair<int, Rect>> enum_moves_with_weight(int count_limit = INT_MAX) const {
+        vector<std::pair<int, Rect>> res;
         vector<Point> ps;
         for (int y = 0; y < input->N; y++) {
             for (int x = 0; x < input->N; x++) {
@@ -393,8 +397,8 @@ struct State {
                     if (has_point[p0.y][p0.x] ^ has_point[p2.y][p2.x]) {
                         if (has_point[p0.y][p0.x]) std::swap(p0, p2);
                         // p0: false
-                        if (check_move_fast({ p0,p1,p2,p3 })) {
-                            res.push_back({ p0, p1, p2, p3 });
+                        if (int w = check_move_fast({ p0,p1,p2,p3 })) {
+                            res.emplace_back(w, Rect{p0, p1, p2, p3});
                             if (count_limit == (int)res.size()) return res;
                         }
                     }
@@ -414,8 +418,8 @@ struct State {
                     if (has_point[p0.y][p0.x] ^ has_point[p2.y][p2.x]) {
                         if (has_point[p0.y][p0.x]) std::swap(p0, p2);
                         // p0: false
-                        if (check_move_fast({ p0,p1,p2,p3 })) {
-                            res.push_back({ p0, p1, p2, p3 });
+                        if (int w = check_move_fast({ p0,p1,p2,p3 })) {
+                            res.emplace_back(w, Rect{ p0, p1, p2, p3 });
                             if (count_limit == (int)res.size()) return res;
                         }
                     }
@@ -426,11 +430,6 @@ struct State {
     }
 
 };
-
-int weight(int x, int y, int N) {
-    int dx = x - N / 2, dy = y - N / 2;
-    return dx * dx + dy * dy + 1;
-}
 
 std::tuple<int, string, State> compute_score(InputPtr input, const vector<Rect>& out) {
     State state(input);
@@ -476,15 +475,13 @@ struct Output {
 Output solve(InputPtr input) {
     Timer timer;
     auto state = std::make_shared<State>(input);
-    vector<Rect> ans;
     while (true) {
-        auto cands = state->enum_moves();
-        //dump(cands.size());
+        auto cands = state->enum_moves_with_weight();
         if (cands.empty()) break;
-        state->apply_move(cands.front());
-        ans.push_back(cands[0]);
+        std::stable_sort(cands.begin(), cands.end(), [](const auto& lhs, const auto& rhs) { return lhs.first > rhs.first; });
+        state->apply_move(cands.front().second);
     }
-    return { ans, timer.elapsed_ms() };
+    return { state->rects, timer.elapsed_ms() };
 }
 
 #ifdef _MSC_VER
@@ -580,7 +577,8 @@ void test() {
 
     {
         State state(input);
-        auto res = state.enum_moves();
+        dump(state.eval());
+        auto res = state.enum_moves_with_weight();
         dump(res.size());
     }
 
@@ -597,8 +595,8 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
 #endif
 
 #ifdef _MSC_VER
-    std::ifstream ifs(R"(tools_win\in\0005.txt)");
-    std::ofstream ofs(R"(tools_win\out\0005.txt)");
+    std::ifstream ifs(R"(tools_win\in\0000.txt)");
+    std::ofstream ofs(R"(tools_win\out\0000.txt)");
     std::istream& in = ifs;
     std::ostream& out = ofs;
 #else
