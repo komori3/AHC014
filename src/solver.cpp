@@ -263,7 +263,7 @@ struct State {
         }
     }
     
-    string check_move(const Rect& rect, bool verbose = false) const {
+    string check_move(const Rect& rect) const {
         for (int i = 1; i < 4; i++) {
             if (!has_point[rect[i].y][rect[i].x]) {
                 return format("%s does not contain a dot", rect[i].stringify().c_str());
@@ -308,6 +308,51 @@ struct State {
         return "";
     }
 
+    bool check_move_fast(const Rect& rect) const {
+        for (int i = 1; i < 4; i++) {
+            if (!has_point[rect[i].y][rect[i].x]) {
+                return false;
+            }
+        }
+        if (has_point[rect[0].y][rect[0].x]) {
+            return false;
+        }
+        int dx01 = rect[1].x - rect[0].x, dy01 = rect[1].y - rect[0].y;
+        int dx03 = rect[3].x - rect[0].x, dy03 = rect[3].y - rect[0].y;
+        if (dx01 * dx03 + dy01 * dy03 != 0) {
+            return false;
+        }
+        if (dx01 != 0 && dy01 != 0 && abs(dx01) != abs(dy01)) {
+            return false;
+        }
+        if (rect[1].x + dx03 != rect[2].x || rect[1].y + dy03 != rect[2].y) {
+            return false;
+        }
+        for (int i = 0; i < 4; i++) {
+            auto [x, y] = rect[i];
+            auto [tx, ty] = rect[(i + 1) % 4];
+            int dx = x < tx ? 1 : (x > tx ? -1 : 0);
+            int dy = y < ty ? 1 : (y > ty ? -1 : 0);
+            int dir = -1;
+            for (dir = 0; dir < 8; dir++) if (dx8[dir] == dx && dy8[dir] == dy) break;
+            assert(dir != -1);
+            while (x != tx || y != ty) {
+                if ((rect[i].x != x || rect[i].y != y) && has_point[y][x]) {
+                    return false;
+                }
+                if (used[y][x][dir]) {
+                    return false;
+                }
+                x += dx;
+                y += dy;
+                if (used[y][x][dir ^ 4]) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
     void apply_move(const Rect& rect) {
         has_point[rect[0].y][rect[0].x] = true;
         for (int i = 0; i < 4; i++) {
@@ -327,7 +372,7 @@ struct State {
         }
     }
 
-    vector<Rect> enum_moves() const {
+    vector<Rect> enum_moves(int count_limit = INT_MAX) const {
         vector<Rect> res;
         vector<Point> p2s;
         for (int y = 0; y < input->N; y++) {
@@ -341,13 +386,14 @@ struct State {
             for (int x0 = 0; x0 < input->N; x0++) {
                 if (has_point[y0][x0]) continue;
                 for (const auto [x2, y2] : p2s) {
-                    {
+                    if(has_point[y0][x2] && has_point[y2][x0]) {
                         // axis-aligned rectangle
                         // p1: y=y0, x=x2 ‚ÌŒð“_
                         Point p1(x2, y0), p3(x0, y2);
-                        Rect rect{ Point(x0, y0), p1, Point(x2, y2), p3 };
-                        if (check_move(rect).empty()) {
+                        Rect rect{ Point(x0, y0), Point(x2, y0), Point(x2, y2), Point(x0, y2) };
+                        if (check_move_fast(rect)) {
                             res.push_back(rect);
+                            if (res.size() == count_limit) return res;
                         }
                     }
                     {
@@ -360,22 +406,22 @@ struct State {
                         if (x1 % 2 != 0) continue;
                         x1 /= 2;
                         int y1 = y0 - x0 + x1;
-                        if (x1 < 0 || x1 >= input->N || y1 < 0 || y1 >= input->N) continue;
+                        if (x1 < 0 || x1 >= input->N || y1 < 0 || y1 >= input->N || !has_point[y1][x1]) continue;
                         int x3 = (y0 + x0) - (y2 - x2);
                         if (x3 % 2 != 0) continue;
                         x3 /= 2;
                         int y3 = y0 + x0 - x3;
-                        if (x3 < 0 || x3 >= input->N || y3 < 0 || y3 >= input->N) continue;
+                        if (x3 < 0 || x3 >= input->N || y3 < 0 || y3 >= input->N || !has_point[y3][x3]) continue;
                         Rect rect{ Point(x0, y0), Point(x1, y1), Point(x2, y2), Point(x3, y3) };
-                        if (check_move(rect).empty()) {
+                        if (check_move_fast(rect)) {
                             res.push_back(rect);
+                            if (res.size() == count_limit) return res;
                         }
                     }
                 }
             }
         }
-        dump(res.size());
-        return {};
+        return res;
     }
 
 };
@@ -412,11 +458,39 @@ std::tuple<int, string, State> compute_score(InputPtr input, const vector<Rect>&
     return { score, "", state };
 }
 
-#ifdef _MSC_VER
-void batch_test(int seed_begin = 0, int num_seed = 2000, int step = 20) {
+struct Output {
+    vector<Rect> rects;
+    double elapsed_ms;
+    Output(const vector<Rect>& rects, double elapsed_ms = -1.0) : rects(rects), elapsed_ms(elapsed_ms) {}
+    string stringify() const {
+        string ans;
+        ans += format("%lld\n", rects.size());
+        for (const auto& [p0, p1, p2, p3] : rects) {
+            ans += format("%d %d %d %d %d %d %d %d\n", p0.x, p0.y, p1.x, p1.y, p2.x, p2.y, p3.x, p3.y);
+        }
+        return ans;
+    }
+};
 
-    constexpr int batch_size = 8;
-    constexpr int block_size = batch_size * 20;
+Output solve(InputPtr input) {
+    Timer timer;
+    auto state = std::make_shared<State>(input);
+    vector<Rect> ans;
+    while (true) {
+        auto cands = state->enum_moves(1);
+        //dump(cands.size());
+        if (cands.empty()) break;
+        state->apply_move(cands.front());
+        ans.push_back(cands[0]);
+    }
+    return { ans, timer.elapsed_ms() };
+}
+
+#ifdef _MSC_VER
+void batch_test(int seed_begin = 0, int num_seed = 100, int step = 1) {
+
+    constexpr int batch_size = 4;
+    const int block_size = batch_size * step;
     int seed_end = seed_begin + num_seed;
 
     vector<int> scores(num_seed);
@@ -427,21 +501,20 @@ void batch_test(int seed_begin = 0, int num_seed = 2000, int step = 20) {
         vector<int> seeds;
         for (int seed = batch_begin; seed < batch_end; seed += step) seeds.push_back(seed);
         concurrency::parallel_for_each(seeds.begin(), seeds.end(), [&mtx, &scores](int seed) {
-            std::ifstream ifs(format("tools/in/%04d.txt", seed));
+            std::ifstream ifs(format("tools_win/in/%04d.txt", seed));
             std::istream& in = ifs;
-            std::ofstream ofs(format("tools/out/%04d.txt", seed));
+            std::ofstream ofs(format("tools_win/out/%04d.txt", seed));
             std::ostream& out = ofs;
 
-            //auto input = std::make_shared<Input>(in);
-            //auto res = solve(input);
-            //print_answer(out, res);
-
-            //{
-            //    mtx.lock();
-            //    scores[seed] = calc_score(input, res);
-            //    cerr << seed << ": " << scores[seed] << '\n';
-            //    mtx.unlock();
-            //}
+            auto input = std::make_shared<Input>(in);
+            auto res = solve(input);
+            {
+                mtx.lock();
+                out << res;
+                scores[seed] = std::get<0>(compute_score(input, res.rects));
+                cerr << format("seed=%d, score=%d, elapsed_ms=%f\n", seed, scores[seed], res.elapsed_ms);
+                mtx.unlock();
+            }
             });
     }
 #else
@@ -514,6 +587,7 @@ void test() {
 }
 
 
+
 int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
 
 #ifdef HAVE_OPENCV_HIGHGUI
@@ -521,8 +595,8 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
 #endif
 
 #ifdef _MSC_VER
-    std::ifstream ifs(R"(tools_win\in\0000.txt)");
-    std::ofstream ofs(R"(tools_win\out\0000.txt)");
+    std::ifstream ifs(R"(tools_win\in\0005.txt)");
+    std::ofstream ofs(R"(tools_win\out\0005.txt)");
     std::istream& in = ifs;
     std::ostream& out = ofs;
 #else
@@ -530,14 +604,14 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     std::ostream& out = cout;
 #endif
 
-    test();
-
 #if 0
     batch_test();
 #else
-    //auto input = std::make_shared<Input>(in);
-    //auto res = solve(input);
-    //print_answer(out, res);
+    auto input = std::make_shared<Input>(in);
+    auto ans = solve(input);
+    dump(std::get<0>(compute_score(input, ans.rects)));
+    out << ans;
+    dump(ans.elapsed_ms);
 #endif
 
     return 0;
