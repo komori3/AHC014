@@ -374,48 +374,49 @@ struct State {
 
     vector<Rect> enum_moves(int count_limit = INT_MAX) const {
         vector<Rect> res;
-        vector<Point> p2s;
+        vector<Point> ps;
         for (int y = 0; y < input->N; y++) {
             for (int x = 0; x < input->N; x++) {
                 if (has_point[y][x]) {
-                    p2s.emplace_back(x, y);
+                    ps.emplace_back(x, y);
                 }
             }
         }
-        for (int y0 = 0; y0 < input->N; y0++) {
-            for (int x0 = 0; x0 < input->N; x0++) {
-                if (has_point[y0][x0]) continue;
-                for (const auto [x2, y2] : p2s) {
-                    if(has_point[y0][x2] && has_point[y2][x0]) {
-                        // axis-aligned rectangle
-                        // p1: y=y0, x=x2 �̌�_
-                        Point p1(x2, y0), p3(x0, y2);
-                        Rect rect{ Point(x0, y0), Point(x2, y0), Point(x2, y2), Point(x0, y2) };
-                        if (check_move_fast(rect)) {
-                            res.push_back(rect);
-                            if (res.size() == count_limit) return res;
+        for (int idx1 = 0; idx1 + 1 < (int)ps.size(); idx1++) {
+            auto p1 = ps[idx1];
+            for (int idx3 = idx1 + 1; idx3 < (int)ps.size(); idx3++) {
+                auto p3 = ps[idx3];
+                if (p1.x != p3.x && p1.y != p3.y) {
+                    // not axis-aligned
+                    Point p0(p1.x, p3.y), p2(p3.x, p1.y);
+                    // 一方のみ true なら置ける
+                    if (has_point[p0.y][p0.x] ^ has_point[p2.y][p2.x]) {
+                        if (has_point[p0.y][p0.x]) std::swap(p0, p2);
+                        // p0: false
+                        if (check_move_fast({ p0,p1,p2,p3 })) {
+                            res.push_back({ p0, p1, p2, p3 });
+                            if (count_limit == (int)res.size()) return res;
                         }
                     }
-                    {
-                        // 45deg-rotated rectangle
-                        // p1: y-y0=x-x0, y-y2=-(x-x2) �̌�_
-                        // y=y0-x0+x, y=y2+x2-x, y0-x0+x=y2+x2-x, 2x=(y2+x2)-(y0-x0)
-                        // p2: y-y0=-(x-x0), y-y2=x-x2 �̌�_
-                        // y=y0+x0-x, y=y2-x2+x, y0+x0-x=y2-x2+x, 2x=(y0+x0)-(y2-x2)
-                        int x1 = (y2 + x2) - (y0 - x0);
-                        if (x1 % 2 != 0) continue;
-                        x1 /= 2;
-                        int y1 = y0 - x0 + x1;
-                        if (x1 < 0 || x1 >= input->N || y1 < 0 || y1 >= input->N || !has_point[y1][x1]) continue;
-                        int x3 = (y0 + x0) - (y2 - x2);
-                        if (x3 % 2 != 0) continue;
-                        x3 /= 2;
-                        int y3 = y0 + x0 - x3;
-                        if (x3 < 0 || x3 >= input->N || y3 < 0 || y3 >= input->N || !has_point[y3][x3]) continue;
-                        Rect rect{ Point(x0, y0), Point(x1, y1), Point(x2, y2), Point(x3, y3) };
-                        if (check_move_fast(rect)) {
-                            res.push_back(rect);
-                            if (res.size() == count_limit) return res;
+                }
+                int dx = abs(p1.x - p3.x), dy = abs(p1.y - p3.y);
+                if (dx != dy && (dx + dy) % 2 == 0) {
+                    // not diagonal-aligned
+                    // p0: y-y1=x-x1, y-y3=-(x-x3)
+                    // y=y1-x1+x=y3+x3-x, 2x=(y3+x3)-(y1-x1)
+                    // p2: y-y1=-(x-x1), y-y3=x-x3
+                    // y=y1+x1-x=y3-x3+x, 2x=(y1+x1)-(y3-x3)
+                    int x0 = (p3.y + p3.x - p1.y + p1.x) / 2, y0 = p1.y - p1.x + x0;
+                    if (x0 < 0 || x0 >= input->N || y0 < 0 || y0 >= input->N) continue;
+                    int x2 = (p1.y + p1.x - p3.y + p3.x) / 2, y2 = p1.y + p1.x - x2;
+                    if (x2 < 0 || x2 >= input->N || y2 < 0 || y2 >= input->N) continue;
+                    Point p0(x0, y0), p2(x2, y2);
+                    if (has_point[p0.y][p0.x] ^ has_point[p2.y][p2.x]) {
+                        if (has_point[p0.y][p0.x]) std::swap(p0, p2);
+                        // p0: false
+                        if (check_move_fast({ p0,p1,p2,p3 })) {
+                            res.push_back({ p0, p1, p2, p3 });
+                            if (count_limit == (int)res.size()) return res;
                         }
                     }
                 }
@@ -433,7 +434,7 @@ int weight(int x, int y, int N) {
 
 std::tuple<int, string, State> compute_score(InputPtr input, const vector<Rect>& out) {
     State state(input);
-    for (int t = 0; t < out.size(); t++) {
+    for (int t = 0; t < (int)out.size(); t++) {
         const auto& rect = out[t];
         auto err = state.check_move(rect);
         if (!err.empty()) {
@@ -477,7 +478,7 @@ Output solve(InputPtr input) {
     auto state = std::make_shared<State>(input);
     vector<Rect> ans;
     while (true) {
-        auto cands = state->enum_moves(1);
+        auto cands = state->enum_moves();
         //dump(cands.size());
         if (cands.empty()) break;
         state->apply_move(cands.front());
@@ -489,7 +490,7 @@ Output solve(InputPtr input) {
 #ifdef _MSC_VER
 void batch_test(int seed_begin = 0, int num_seed = 100, int step = 1) {
 
-    constexpr int batch_size = 4;
+    constexpr int batch_size = 8;
     const int block_size = batch_size * step;
     int seed_end = seed_begin + num_seed;
 
@@ -579,7 +580,8 @@ void test() {
 
     {
         State state(input);
-        state.enum_moves();
+        auto res = state.enum_moves();
+        dump(res.size());
     }
 
     auto [score, err, state] = compute_score(input, output);
