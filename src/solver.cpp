@@ -269,29 +269,12 @@ inline int area(const Rect& rect) {
 struct Input;
 using InputPtr = std::shared_ptr<Input>;
 struct Input {
-    int N;
-    vector<Point> ps;
-    int S, Q;
-    Input(std::istream& in) {
-        int M;
-        in >> N >> M;
-        ps.resize(M);
-        in >> ps;
-        S = Q = 0;
-        for (int y = 0; y < N; y++) for (int x = 0; x < N; x++) S += weight(x, y, N);
-        for (const auto& [x, y] : ps) Q += weight(x, y, N);
-    }
-};
-
-struct Input2;
-using Input2Ptr = std::shared_ptr<Input2>;
-struct Input2 {
     // 1-indexed
     int N;
     vector<Point> ps;
     int S, Q;
     vector<vector<int>> ws;
-    Input2(std::istream& in) {
+    Input(std::istream& in) {
         int M;
         in >> N >> M;
         ps.resize(M);
@@ -312,183 +295,6 @@ using StatePtr = std::shared_ptr<State>;
 struct State {
 
     InputPtr input;
-    vector<vector<bool>> has_point;
-    vector<vector<array<bool, 8>>> used;
-    vector<Rect> rects;
-    int weight_sum;
-
-    State(InputPtr input) : input(input) {
-        has_point.resize(input->N, std::vector<bool>(input->N, false));
-        used.resize(input->N, std::vector<array<bool, 8>>(input->N));
-        weight_sum = input->Q;
-        for (const auto& [x, y] : input->ps) {
-            has_point[y][x] = true;
-        }
-    }
-
-    int eval() const {
-        return (int)round(1e6 * (input->N * input->N) / input->ps.size() * weight_sum / input->S);
-    }
-    
-    string check_move(const Rect& rect) const {
-        for (int i = 1; i < 4; i++) {
-            if (!has_point[rect[i].y][rect[i].x]) {
-                return format("%s does not contain a dot", rect[i].stringify().c_str());
-            }
-        }
-        if (has_point[rect[0].y][rect[0].x]) {
-            return format("%s already contains a dot", rect[0].stringify().c_str());
-        }
-        int dx01 = rect[1].x - rect[0].x, dy01 = rect[1].y - rect[0].y;
-        int dx03 = rect[3].x - rect[0].x, dy03 = rect[3].y - rect[0].y;
-        if (dx01 * dx03 + dy01 * dy03 != 0) {
-            return "Illegal rectangle";
-        }
-        if (dx01 != 0 && dy01 != 0 && abs(dx01) != abs(dy01)) {
-            return "Illegal rectangle";
-        }
-        if (rect[1].x + dx03 != rect[2].x || rect[1].y + dy03 != rect[2].y) {
-            return "Illegal rectangle";
-        }
-        for (int i = 0; i < 4; i++) {
-            auto [x, y] = rect[i];
-            auto [tx, ty] = rect[(i + 1) % 4];
-            int dx = x < tx ? 1 : (x > tx ? -1 : 0);
-            int dy = y < ty ? 1 : (y > ty ? -1 : 0);
-            int dir = -1;
-            for (dir = 0; dir < 8; dir++) if (dx8[dir] == dx && dy8[dir] == dy) break;
-            assert(dir != -1);
-            while (x != tx || y != ty) {
-                if ((rect[i].x != x || rect[i].y != y) && has_point[y][x]) {
-                    return format("There is an obstacle at [%d, %d]", x, y);
-                }
-                if (used[y][x][dir]) {
-                    return "Overlapped rectangles";
-                }
-                x += dx;
-                y += dy;
-                if (used[y][x][dir ^ 4]) {
-                    return "Overlapped rectangles";
-                }
-            }
-        }
-        return "";
-    }
-
-    int check_move_fast(const Rect& rect) const {
-        for (int i = 1; i < 4; i++) if (!has_point[rect[i].y][rect[i].x]) return 0;
-        if (has_point[rect[0].y][rect[0].x]) return 0;
-        int dx01 = rect[1].x - rect[0].x, dy01 = rect[1].y - rect[0].y;
-        int dx03 = rect[3].x - rect[0].x, dy03 = rect[3].y - rect[0].y;
-        if (dx01 * dx03 + dy01 * dy03) return 0;
-        if ((dx01 != 0) & (dy01 != 0) & (abs(dx01) != abs(dy01))) return 0;
-        if ((rect[1].x + dx03 != rect[2].x) | (rect[1].y + dy03 != rect[2].y)) return 0;
-        for (int i = 0; i < 4; i++) {
-            auto [x, y] = rect[i];
-            auto [tx, ty] = rect[(i + 1) % 4];
-            int dx = x < tx ? 1 : (x > tx ? -1 : 0);
-            int dy = y < ty ? 1 : (y > ty ? -1 : 0);
-            int dir = -1;
-            for (dir = 0; dir < 8; dir++) if ((dx8[dir] == dx) & (dy8[dir] == dy)) break;
-            assert(dir != -1);
-            while (x != tx || y != ty) {
-                if (((rect[i].x != x) | (rect[i].y != y)) & has_point[y][x]) return 0;
-                if (used[y][x][dir]) return 0;
-                x += dx;
-                y += dy;
-                if (used[y][x][dir ^ 4]) return 0;
-            }
-        }
-        return weight(rect[0], input->N);
-    }
-
-    void apply_move(const Rect& rect) {
-        rects.push_back(rect);
-        has_point[rect[0].y][rect[0].x] = true;
-        weight_sum += weight(rect[0], input->N);
-        for (int i = 0; i < 4; i++) {
-            auto [x, y] = rect[i];
-            auto [tx, ty] = rect[(i + 1) % 4];
-            int dx = x < tx ? 1 : (x > tx ? -1 : 0);
-            int dy = y < ty ? 1 : (y > ty ? -1 : 0);
-            int dir = -1;
-            for (dir = 0; dir < 8; dir++) if (dx8[dir] == dx && dy8[dir] == dy) break;
-            assert(dir != -1);
-            while (x != tx || y != ty) {
-                used[y][x][dir] = true;
-                x += dx;
-                y += dy;
-                used[y][x][dir ^ 4] = true;
-            }
-        }
-    }
-
-    template<typename F>
-    std::pair<bool, Rect> choose_greedy(const F& pred) const {
-        vector<Rect> cands;
-        vector<Point> ps;
-        for (int y = 0; y < input->N; y++) {
-            for (int x = 0; x < input->N; x++) {
-                if (has_point[y][x]) {
-                    ps.emplace_back(x, y);
-                }
-            }
-        }
-        for (int idx1 = 0; idx1 + 1 < (int)ps.size(); idx1++) {
-            auto p1 = ps[idx1];
-            for (int idx3 = idx1 + 1; idx3 < (int)ps.size(); idx3++) {
-                auto p3 = ps[idx3];
-                if (p1.x != p3.x && p1.y != p3.y) {
-                    // not axis-aligned
-                    Point p0(p1.x, p3.y), p2(p3.x, p1.y);
-                    // 一方のみ true なら置ける
-                    if (has_point[p0.y][p0.x] ^ has_point[p2.y][p2.x]) {
-                        if (has_point[p0.y][p0.x]) std::swap(p0, p2);
-                        // p0: false
-                        Rect rect{ p0, p1, p2, p3 };
-                        if (check_move_fast(rect)) {
-                            cands.push_back(rect);
-                        }
-                    }
-                }
-                int dx = abs(p1.x - p3.x), dy = abs(p1.y - p3.y);
-                if (dx != dy && (dx + dy) % 2 == 0) {
-                    // not diagonal-aligned
-                    // p0: y-y1=x-x1, y-y3=-(x-x3)
-                    // y=y1-x1+x=y3+x3-x, 2x=(y3+x3)-(y1-x1)
-                    // p2: y-y1=-(x-x1), y-y3=x-x3
-                    // y=y1+x1-x=y3-x3+x, 2x=(y1+x1)-(y3-x3)
-                    int x0 = (p3.y + p3.x - p1.y + p1.x) / 2, y0 = p1.y - p1.x + x0;
-                    if (x0 < 0 || x0 >= input->N || y0 < 0 || y0 >= input->N) continue;
-                    int x2 = (p1.y + p1.x - p3.y + p3.x) / 2, y2 = p1.y + p1.x - x2;
-                    if (x2 < 0 || x2 >= input->N || y2 < 0 || y2 >= input->N) continue;
-                    Point p0(x0, y0), p2(x2, y2);
-                    if (has_point[p0.y][p0.x] ^ has_point[p2.y][p2.x]) {
-                        if (has_point[p0.y][p0.x]) std::swap(p0, p2);
-                        // p0: false
-                        Rect rect{ p0, p1, p2, p3 };
-                        if (check_move_fast(rect)) {
-                            cands.push_back(rect);
-                        }
-                    }
-                }
-            }
-        }
-        if (cands.empty()) return { false, Rect() };
-        Rect best = cands.front();
-        for (int i = 1; i < (int)cands.size(); i++) {
-            if (!pred(best, cands[i])) best = cands[i];
-        }
-        return { true, best };
-    }
-
-};
-
-struct State2;
-using State2Ptr = std::shared_ptr<State2>;
-struct State2 {
-
-    Input2Ptr input;
     int N;
 
     vector<vector<bool>> has_point; // 外周は印が付いているとする
@@ -497,7 +303,7 @@ struct State2 {
     vector<Rect> rects;
     int weight_sum;
 
-    State2(Input2Ptr input) : input(input), N(input->N) {
+    State(InputPtr input) : input(input), N(input->N) {
         has_point.resize(N + 2, vector<bool>(N + 2, true));
         for (int y = 1; y <= N; y++) for (int x = 1; x <= N; x++) has_point[y][x] = false;
         used.resize(N + 2, vector<array<bool, 8>>(N + 2));
@@ -644,33 +450,6 @@ std::tuple<int, string, State> compute_score(InputPtr input, const vector<Rect>&
     State state(input);
     for (int t = 0; t < (int)out.size(); t++) {
         const auto& rect = out[t];
-        auto err = state.check_move(rect);
-        if (!err.empty()) {
-            return { 0, format("%s (turn: %d)", err, t), state };
-        }
-        state.apply_move(out[t]);
-    }
-    int num = 0;
-    for (const auto& [x, y] : input->ps) {
-        num += weight(x, y, input->N);
-    }
-    for (const auto& rect : out) {
-        num += weight(rect[0].x, rect[0].y, input->N);
-    }
-    int den = 0;
-    for (int i = 0; i < input->N; i++) {
-        for (int j = 0; j < input->N; j++) {
-            den += weight(i, j, input->N);
-        }
-    }
-    int score = (int)round(1e6 * (input->N * input->N) / input->ps.size() * num / den);
-    return { score, "", state };
-}
-
-std::tuple<int, string, State2> compute_score(Input2Ptr input, const vector<Rect>& out) {
-    State2 state(input);
-    for (int t = 0; t < (int)out.size(); t++) {
-        const auto& rect = out[t];
         state.apply_move(out[t]);
     }
     int num = 0;
@@ -698,7 +477,10 @@ struct Output {
         string ans;
         ans += format("%lld\n", rects.size());
         for (const auto& [p0, p1, p2, p3] : rects) {
-            ans += format("%d %d %d %d %d %d %d %d\n", p0.x, p0.y, p1.x, p1.y, p2.x, p2.y, p3.x, p3.y);
+            ans += format(
+                "%d %d %d %d %d %d %d %d\n",
+                p0.x - 1, p0.y - 1, p1.x - 1, p1.y - 1, p2.x - 1, p2.y - 1, p3.x - 1, p3.y - 1
+            );
         }
         return ans;
     }
@@ -713,46 +495,6 @@ Output solve(InputPtr input) {
         if (timer.elapsed_ms() < 4900) {
             auto state = std::make_shared<State>(input);
             auto f = [&input, &rnd](const Rect& lhs, const Rect& rhs) {
-                return std::make_pair(-weight(lhs[0], input->N), rnd.next_int()) < std::make_pair(-weight(rhs[0], input->N), rnd.next_int());
-            };
-            while (true) {
-                auto res = state->choose_greedy(f);
-                if (!res.first) break;
-                state->apply_move(res.second);
-                if (timer.elapsed_ms() > 4900) break;
-            }
-            if (chmax(best_score, state->eval())) {
-                best_state = state;
-            }
-        }
-        if (timer.elapsed_ms() < 4900) {
-            auto state = std::make_shared<State>(input);
-            auto f = [&input, &rnd](const Rect& lhs, const Rect& rhs) {
-                return std::make_pair(area(lhs), rnd.next_int()) < std::make_pair(area(rhs), rnd.next_int());
-            };
-            while (true) {
-                auto res = state->choose_greedy(f);
-                if (!res.first) break;
-                state->apply_move(res.second);
-                if (timer.elapsed_ms() > 4900) break;
-            }
-            if (chmax(best_score, state->eval())) {
-                best_state = state;
-            }
-        }
-    }
-    return { best_state->rects, timer.elapsed_ms() };
-}
-
-Output solve(Input2Ptr input) {
-    Timer timer;
-    State2Ptr best_state = nullptr;
-    int best_score = -1;
-    Xorshift rnd;
-    while (timer.elapsed_ms() < 4900) {
-        if (timer.elapsed_ms() < 4900) {
-            auto state = std::make_shared<State2>(input);
-            auto f = [&input, &rnd](const Rect& lhs, const Rect& rhs) {
                 return std::make_pair(-input->ws[lhs[0].y][lhs[0].x], rnd.next_int()) < std::make_pair(-input->ws[rhs[0].y][rhs[0].x], rnd.next_int());
             };
             while (true) {
@@ -766,7 +508,7 @@ Output solve(Input2Ptr input) {
             }
         }
         if (timer.elapsed_ms() < 4900) {
-            auto state = std::make_shared<State2>(input);
+            auto state = std::make_shared<State>(input);
             auto f = [&input, &rnd](const Rect& lhs, const Rect& rhs) {
                 return std::make_pair(area(lhs), rnd.next_int()) < std::make_pair(area(rhs), rnd.next_int());
             };
@@ -873,54 +615,6 @@ void test() {
         iss >> K;
         output.resize(K);
         iss >> output;
-    }
-
-    {
-        State state(input);
-        dump(state.eval());
-    }
-
-    auto [score, err, state] = compute_score(input, output);
-    dump(score);
-}
-
-void test2() {
-#ifdef _MSC_VER
-    std::ifstream ifs(R"(tools_win\in\0000.txt)");
-    std::istream& in = ifs;
-#else
-    std::istream& in = cin;
-#endif
-    auto input = std::make_shared<Input2>(in);
-    string output_raw = R"(20
-9 15 12 12 15 15 12 18
-15 20 12 17 15 14 18 17
-23 22 19 22 19 12 23 12
-23 14 22 15 21 14 22 13
-10 14 10 13 12 13 12 14
-11 11 12 11 12 12 11 12
-18 20 15 20 15 19 18 19
-19 16 22 19 21 20 18 17
-12 19 12 18 15 18 15 19
-15 22 12 19 15 16 18 19
-14 22 15 22 15 24 14 24
-15 8 18 11 15 14 12 11
-10 15 9 15 9 14 10 14
-11 18 12 19 10 21 9 20
-22 23 20 21 21 20 23 22
-21 15 18 15 18 14 21 14
-15 26 13 24 15 22 17 24
-20 20 16 24 14 22 18 18
-21 17 18 20 15 17 18 14
-11 14 10 13 11 12 12 13
-)";
-    vector<Rect> output;
-    {
-        std::istringstream iss(output_raw);
-        int K;
-        iss >> K;
-        output.resize(K);
-        iss >> output;
         for (auto& [p0, p1, p2, p3] : output) {
             p0.x++, p1.x++, p2.x++, p3.x++;
             p0.y++, p1.y++, p2.y++, p3.y++;
@@ -928,7 +622,7 @@ void test2() {
     }
 
     {
-        State2 state(input);
+        State state(input);
         for (const auto& rect : output) {
             state.apply_move(rect);
         }
@@ -938,7 +632,7 @@ void test2() {
     }
     
     {
-        State2 state(input);
+        State state(input);
         dump(state.check_move({ 15, 18 }, 1));
     }
 
@@ -963,13 +657,9 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
 #if 0
     batch_test();
 #else
-    auto input = std::make_shared<Input2>(in);
+    auto input = std::make_shared<Input>(in);
     auto ans = solve(input);
     dump(std::get<0>(compute_score(input, ans.rects)));
-    for (auto& [p0, p1, p2, p3] : ans.rects) {
-        p0.x--, p1.x--, p2.x--, p3.x--;
-        p0.y--, p1.y--, p2.y--, p3.y--;
-    }
     out << ans;
     dump(ans.elapsed_ms);
 #endif
