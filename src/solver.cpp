@@ -217,6 +217,9 @@ using std::cin, std::cout, std::cerr, std::endl, std::string, std::vector, std::
 
 
 
+// 5 6 7
+// 4 x 0
+// 3 2 1
 constexpr int dx8[] = { 1,1,0,-1,-1,-1,0,1 };
 constexpr int dy8[] = { 0,1,1,1,0,-1,-1,-1 };
 
@@ -268,6 +271,30 @@ struct Input {
         S = Q = 0;
         for (int y = 0; y < N; y++) for (int x = 0; x < N; x++) S += weight(x, y, N);
         for (const auto& [x, y] : ps) Q += weight(x, y, N);
+    }
+};
+
+struct Input2;
+using Input2Ptr = std::shared_ptr<Input2>;
+struct Input2 {
+    // 1-indexed
+    int N;
+    vector<Point> ps;
+    int S, Q;
+    vector<vector<int>> ws;
+    Input2(std::istream& in) {
+        int M;
+        in >> N >> M;
+        ps.resize(M);
+        in >> ps;
+        S = Q = 0;
+        ws.resize(N + 2, vector<int>(N + 2, -1));
+        for (int y = 0; y < N; y++) for (int x = 0; x < N; x++) {
+            ws[y + 1][x + 1] = weight(x, y, N);
+            S += ws[y + 1][x + 1];
+        }
+        for (const auto& [x, y] : ps) Q += ws[y + 1][x + 1];
+        for (auto& [x, y] : ps) x++, y++;
     }
 };
 
@@ -448,6 +475,147 @@ struct State {
 
 };
 
+struct State2;
+using State2Ptr = std::shared_ptr<State2>;
+struct State2 {
+
+    Input2Ptr input;
+    int N;
+
+    vector<vector<bool>> has_point; // 外周は印が付いているとする
+    vector<vector<array<bool, 8>>> used;
+    vector<Rect> rects;
+    int weight_sum;
+
+    State2(Input2Ptr input) : input(input), N(input->N) {
+        has_point.resize(N + 2, vector<bool>(N + 2, true));
+        for (int y = 1; y <= N; y++) for (int x = 1; x <= N; x++) has_point[y][x] = false;
+        used.resize(N + 2, vector<array<bool, 8>>(N + 2));
+        weight_sum = input->Q;
+        for (const auto& [x, y] : input->ps) {
+            has_point[y][x] = true;
+        }
+    }
+
+    int eval() const {
+        return (int)round(1e6 * (input->N * input->N) / input->ps.size() * weight_sum / input->S);
+    }
+
+    inline bool is_inside(int x, int y) const {
+        return 0 < x && x <= N && 0 < y && y <= N;
+    }
+
+    inline bool is_inside(const Point& p) const {
+        return is_inside(p.x, p.y);
+    }
+
+    std::pair<bool, Rect> check_move(const Point& p0, int dir0) const {
+        assert(!has_point[p0.y][p0.x]);
+        int dir1 = (dir0 + 2) & 7;
+        // p0 から dir0, dir1 方向に ray を飛ばした際に印と衝突する点を p1, p3 とする
+        // p1 から dir1 方向に伸ばした半直線と p3 から dir0 方向に伸ばした半直線の交点を p2 とする
+        
+        // 1. p1, p3 は外周ではない
+        Point p1(p0);
+        while (!has_point[p1.y + dy8[dir0]][p1.x + dx8[dir0]]) {
+            if (used[p1.y][p1.x][dir0]) return { 0, {} }; // 4. 他の長方形との共通部分は存在してはいけない
+            p1.x += dx8[dir0];
+            p1.y += dy8[dir0];
+        }
+        if (used[p1.y][p1.x][dir0]) return { 0, {} }; // 4. 他の長方形との共通部分は存在してはいけない
+        p1.x += dx8[dir0];
+        p1.y += dy8[dir0];
+        if (!is_inside(p1)) return { 0, {} };
+        Point p3(p0);
+        while (!has_point[p3.y + dy8[dir1]][p3.x + dx8[dir1]]) {
+            if (used[p3.y][p3.x][dir1]) return { 0, {} }; // 4. 他の長方形との共通部分は存在してはいけない
+            p3.x += dx8[dir1];
+            p3.y += dy8[dir1];
+        }
+        if (used[p3.y][p3.x][dir1]) return { 0, {} }; // 4. 他の長方形との共通部分は存在してはいけない
+        p3.x += dx8[dir1];
+        p3.y += dy8[dir1];
+        if (!is_inside(p3)) return { 0, {} };
+
+        // 2. p2 に印が付いている
+        Point p2(p1.x + p3.x - p0.x, p1.y + p3.y - p0.y);
+        if (!is_inside(p2) || !has_point[p2.y][p2.x]) return { 0, {} };
+
+        // 3. 線分 p1-p2, p3-p2 (境界含まない) 上に印は存在してはいけない
+        {
+            int x, y;
+            for (
+                x = p1.x + dx8[dir1], y = p1.y + dy8[dir1];
+                x != p2.x || y != p2.y;
+                x += dx8[dir1], y += dy8[dir1]
+                ) {
+                if (has_point[y][x]) return { 0, {} };
+                if (used[y][x][dir1 ^ 4]) return { 0, {} }; // 4. 他の長方形との共通部分は存在してはいけない
+            }
+            if (used[y][x][dir1 ^ 4]) return { 0, {} }; // 4. 他の長方形との共通部分は存在してはいけない
+        }
+        {
+            int x, y;
+            for (
+                x = p3.x + dx8[dir0], y = p3.y + dy8[dir0];
+                x != p2.x || y != p2.y;
+                x += dx8[dir0], y += dy8[dir0]
+                ) {
+                if (has_point[y][x]) return { 0, {} };
+                if (used[y][x][dir0 ^ 4]) return { 0, {} }; // 4. 他の長方形との共通部分は存在してはいけない
+            }
+            if (used[y][x][dir0 ^ 4]) return { 0, {} }; // 4. 他の長方形との共通部分は存在してはいけない
+        }
+
+        return { input->ws[p0.y][p0.x], Rect{p0, p1, p2, p3} };
+    }
+
+    void apply_move(const Rect& rect) {
+        rects.push_back(rect);
+        assert(!has_point[rect[0].y][rect[0].x]);
+        has_point[rect[0].y][rect[0].x] = true;
+        weight_sum += input->ws[rect[0].y][rect[0].x];
+        for (int i = 0; i < 4; i++) {
+            auto [x, y] = rect[i];
+            auto [tx, ty] = rect[(i + 1) % 4];
+            int dx = x < tx ? 1 : (x > tx ? -1 : 0);
+            int dy = y < ty ? 1 : (y > ty ? -1 : 0);
+            int dir = -1;
+            for (dir = 0; dir < 8; dir++) if (dx8[dir] == dx && dy8[dir] == dy) break;
+            assert(dir != -1);
+            while (x != tx || y != ty) {
+                used[y][x][dir] = true;
+                x += dx;
+                y += dy;
+                used[y][x][dir ^ 4] = true;
+            }
+        }
+    }
+
+    template<typename F>
+    std::pair<bool, Rect> choose_greedy(const F& pred) const {
+        vector<Rect> cands;
+        for (int y = 0; y < input->N; y++) {
+            for (int x = 0; x < input->N; x++) {
+                if (has_point[y][x]) continue;
+                Point p0(x, y);
+                for (int dir = 0; dir < 8; dir++) {
+                    auto res = check_move(p0, dir);
+                    if (!res.first) continue;
+                    cands.push_back(res.second);
+                }
+            }
+        }
+        if (cands.empty()) return { false, Rect() };
+        Rect best = cands.front();
+        for (int i = 1; i < (int)cands.size(); i++) {
+            if (!pred(best, cands[i])) best = cands[i];
+        }
+        return { true, best };
+    }
+
+};
+
 std::tuple<int, string, State> compute_score(InputPtr input, const vector<Rect>& out) {
     State state(input);
     for (int t = 0; t < (int)out.size(); t++) {
@@ -469,6 +637,29 @@ std::tuple<int, string, State> compute_score(InputPtr input, const vector<Rect>&
     for (int i = 0; i < input->N; i++) {
         for (int j = 0; j < input->N; j++) {
             den += weight(i, j, input->N);
+        }
+    }
+    int score = (int)round(1e6 * (input->N * input->N) / input->ps.size() * num / den);
+    return { score, "", state };
+}
+
+std::tuple<int, string, State2> compute_score(Input2Ptr input, const vector<Rect>& out) {
+    State2 state(input);
+    for (int t = 0; t < (int)out.size(); t++) {
+        const auto& rect = out[t];
+        state.apply_move(out[t]);
+    }
+    int num = 0;
+    for (const auto& [x, y] : input->ps) {
+        num += input->ws[y][x];
+    }
+    for (const auto& rect : out) {
+        num += input->ws[rect[0].y][rect[0].x];
+    }
+    int den = 0;
+    for (int y = 1; y <= input->N; y++) {
+        for (int x = 1; x <= input->N; x++) {
+            den += input->ws[y][x];
         }
     }
     int score = (int)round(1e6 * (input->N * input->N) / input->ps.size() * num / den);
@@ -512,6 +703,46 @@ Output solve(InputPtr input) {
         }
         if (timer.elapsed_ms() < 4900) {
             auto state = std::make_shared<State>(input);
+            auto f = [&input, &rnd](const Rect& lhs, const Rect& rhs) {
+                return std::make_pair(area(lhs), rnd.next_int()) < std::make_pair(area(rhs), rnd.next_int());
+            };
+            while (true) {
+                auto res = state->choose_greedy(f);
+                if (!res.first) break;
+                state->apply_move(res.second);
+                if (timer.elapsed_ms() > 4900) break;
+            }
+            if (chmax(best_score, state->eval())) {
+                best_state = state;
+            }
+        }
+    }
+    return { best_state->rects, timer.elapsed_ms() };
+}
+
+Output solve(Input2Ptr input) {
+    Timer timer;
+    State2Ptr best_state = nullptr;
+    int best_score = -1;
+    Xorshift rnd;
+    while (timer.elapsed_ms() < 4900) {
+        if (timer.elapsed_ms() < 4900) {
+            auto state = std::make_shared<State2>(input);
+            auto f = [&input, &rnd](const Rect& lhs, const Rect& rhs) {
+                return std::make_pair(-weight(lhs[0], input->N), rnd.next_int()) < std::make_pair(-weight(rhs[0], input->N), rnd.next_int());
+            };
+            while (true) {
+                auto res = state->choose_greedy(f);
+                if (!res.first) break;
+                state->apply_move(res.second);
+                if (timer.elapsed_ms() > 4900) break;
+            }
+            if (chmax(best_score, state->eval())) {
+                best_state = state;
+            }
+        }
+        if (timer.elapsed_ms() < 4900) {
+            auto state = std::make_shared<State2>(input);
             auto f = [&input, &rnd](const Rect& lhs, const Rect& rhs) {
                 return std::make_pair(area(lhs), rnd.next_int()) < std::make_pair(area(rhs), rnd.next_int());
             };
@@ -629,7 +860,58 @@ void test() {
     dump(score);
 }
 
+void test2() {
+#ifdef _MSC_VER
+    std::ifstream ifs(R"(tools_win\in\0000.txt)");
+    std::istream& in = ifs;
+#else
+    std::istream& in = cin;
+#endif
+    auto input = std::make_shared<Input2>(in);
+    string output_raw = R"(20
+9 15 12 12 15 15 12 18
+15 20 12 17 15 14 18 17
+23 22 19 22 19 12 23 12
+23 14 22 15 21 14 22 13
+10 14 10 13 12 13 12 14
+11 11 12 11 12 12 11 12
+18 20 15 20 15 19 18 19
+19 16 22 19 21 20 18 17
+12 19 12 18 15 18 15 19
+15 22 12 19 15 16 18 19
+14 22 15 22 15 24 14 24
+15 8 18 11 15 14 12 11
+10 15 9 15 9 14 10 14
+11 18 12 19 10 21 9 20
+22 23 20 21 21 20 23 22
+21 15 18 15 18 14 21 14
+15 26 13 24 15 22 17 24
+20 20 16 24 14 22 18 18
+21 17 18 20 15 17 18 14
+11 14 10 13 11 12 12 13
+)";
+    vector<Rect> output;
+    {
+        std::istringstream iss(output_raw);
+        int K;
+        iss >> K;
+        output.resize(K);
+        iss >> output;
+        for (auto& [p0, p1, p2, p3] : output) {
+            p0.x++, p1.x++, p2.x++, p3.x++;
+            p0.y++, p1.y++, p2.y++, p3.y++;
+        }
+    }
 
+    State2 state(input);
+    for (const auto& rect : output) {
+        state.apply_move(rect);
+    }
+    dump(state.eval());
+
+    dump(std::get<0>(compute_score(input, output)));
+
+}
 
 int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
 
@@ -650,9 +932,13 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
 #if 0
     batch_test();
 #else
-    auto input = std::make_shared<Input>(in);
+    auto input = std::make_shared<Input2>(in);
     auto ans = solve(input);
     dump(std::get<0>(compute_score(input, ans.rects)));
+    for (auto& [p0, p1, p2, p3] : ans.rects) {
+        p0.x--, p1.x--, p2.x--, p3.x--;
+        p0.y--, p1.y--, p2.y--, p3.y--;
+    }
     out << ans;
     dump(ans.elapsed_ms);
 #endif
