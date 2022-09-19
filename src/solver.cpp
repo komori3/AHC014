@@ -222,10 +222,19 @@ using std::cin, std::cout, std::cerr, std::endl, std::string, std::vector, std::
 // 3 2 1
 constexpr int dx8[] = { 1,1,0,-1,-1,-1,0,1 };
 constexpr int dy8[] = { 0,1,1,1,0,-1,-1,-1 };
+constexpr int sgn2dir[3][3] = {
+    {5,6,7},
+    {4,8,0},
+    {3,2,1}
+};
 
 struct Point {
     int x, y;
     Point(int x = 0, int y = 0) : x(x), y(y) {}
+    Point next(int dir) const { return { x + dx8[dir], y + dy8[dir] }; }
+    Point next(int dir, int distance) const { return { x + dx8[dir] * distance, y + dy8[dir] * distance }; }
+    inline bool operator==(const Point& rhs) const { return x == rhs.x && y == rhs.y; }
+    inline bool operator!=(const Point& rhs) const { return !(*this == rhs); }
     string stringify() const {
         return "[" + std::to_string(x) + ", " + std::to_string(y) + "]";
     }
@@ -483,6 +492,7 @@ struct State2 {
     int N;
 
     vector<vector<bool>> has_point; // 外周は印が付いているとする
+    vector<vector<Point>> next_point[8]; // (x,y) から d 方向に進んで初めて印に衝突する点
     vector<vector<array<bool, 8>>> used;
     vector<Rect> rects;
     int weight_sum;
@@ -494,6 +504,18 @@ struct State2 {
         weight_sum = input->Q;
         for (const auto& [x, y] : input->ps) {
             has_point[y][x] = true;
+        }
+        for (int d = 0; d < 8; d++) {
+            next_point[d].resize(N + 2, vector<Point>(N + 2));
+        }
+        for (int sy = 1; sy <= N; sy++) {
+            for (int sx = 1; sx <= N; sx++) {
+                for (int d = 0; d < 8; d++) {
+                    int y = sy, x = sx;
+                    while (!has_point[y][x]) y += dy8[d], x += dx8[d];
+                    next_point[d][sy][sx] = { x, y };
+                }
+            }
         }
     }
 
@@ -512,30 +534,16 @@ struct State2 {
     std::pair<bool, Rect> check_move(const Point& p0, int dir0) const {
         assert(!has_point[p0.y][p0.x]);
         int dir1 = (dir0 + 2) & 7;
-        // p0 から dir0, dir1 方向に ray を飛ばした際に印と衝突する点を p1, p3 とする
+        // p0 から dir0, dir1 方向に進んで初めて衝突する点を p1, p3 とする
         // p1 から dir1 方向に伸ばした半直線と p3 から dir0 方向に伸ばした半直線の交点を p2 とする
         
-        // 1. p1, p3 は外周ではない
-        Point p1(p0);
-        while (!has_point[p1.y + dy8[dir0]][p1.x + dx8[dir0]]) {
-            if (used[p1.y][p1.x][dir0]) return { 0, {} }; // 4. 他の長方形との共通部分は存在してはいけない
-            p1.x += dx8[dir0];
-            p1.y += dy8[dir0];
-        }
-        if (used[p1.y][p1.x][dir0]) return { 0, {} }; // 4. 他の長方形との共通部分は存在してはいけない
-        p1.x += dx8[dir0];
-        p1.y += dy8[dir0];
-        if (!is_inside(p1)) return { 0, {} };
-        Point p3(p0);
-        while (!has_point[p3.y + dy8[dir1]][p3.x + dx8[dir1]]) {
-            if (used[p3.y][p3.x][dir1]) return { 0, {} }; // 4. 他の長方形との共通部分は存在してはいけない
-            p3.x += dx8[dir1];
-            p3.y += dy8[dir1];
-        }
-        if (used[p3.y][p3.x][dir1]) return { 0, {} }; // 4. 他の長方形との共通部分は存在してはいけない
-        p3.x += dx8[dir1];
-        p3.y += dy8[dir1];
-        if (!is_inside(p3)) return { 0, {} };
+        // 1. p1, p3 は印が付いていて、外周ではない
+        Point p1 = next_point[dir0][p0.y][p0.x];
+        if (!is_inside(p1)) return {0, {}};
+        assert(has_point[p1.y][p1.x]);
+        Point p3 = next_point[dir1][p0.y][p0.x];
+        if (!is_inside(p3)) return {0, {}};
+        assert(has_point[p3.y][p3.x]);
 
         // 2. p2 に印が付いている
         Point p2(p1.x + p3.x - p0.x, p1.y + p3.y - p0.y);
@@ -543,46 +551,62 @@ struct State2 {
 
         // 3. 線分 p1-p2, p3-p2 (境界含まない) 上に印は存在してはいけない
         {
-            int x, y;
-            for (
-                x = p1.x + dx8[dir1], y = p1.y + dy8[dir1];
-                x != p2.x || y != p2.y;
-                x += dx8[dir1], y += dy8[dir1]
-                ) {
-                if (has_point[y][x]) return { 0, {} };
-                if (used[y][x][dir1 ^ 4]) return { 0, {} }; // 4. 他の長方形との共通部分は存在してはいけない
-            }
-            if (used[y][x][dir1 ^ 4]) return { 0, {} }; // 4. 他の長方形との共通部分は存在してはいけない
+            // p1 から p2 方向に進んで初めてぶつかる点は p2 でなければならない
+            auto [x, y] = p1.next(dir1);
+            if (next_point[dir1][y][x] != p2) return { 0, {} };
         }
         {
-            int x, y;
-            for (
-                x = p3.x + dx8[dir0], y = p3.y + dy8[dir0];
-                x != p2.x || y != p2.y;
-                x += dx8[dir0], y += dy8[dir0]
-                ) {
-                if (has_point[y][x]) return { 0, {} };
-                if (used[y][x][dir0 ^ 4]) return { 0, {} }; // 4. 他の長方形との共通部分は存在してはいけない
-            }
-            if (used[y][x][dir0 ^ 4]) return { 0, {} }; // 4. 他の長方形との共通部分は存在してはいけない
+            // p3 から p2 方向に進んで初めてぶつかる点は p2 でなければならない
+            auto [x, y] = p3.next(dir0);
+            if (next_point[dir0][y][x] != p2) return { 0, {} };
         }
 
-        return { input->ws[p0.y][p0.x], Rect{p0, p1, p2, p3} };
+        // 4. 他の長方形との共通部分は存在してはいけない
+        Rect rect{ p0, p1, p2, p3 };
+        for (int i = 0; i < 4; i++) {
+            auto [x, y] = rect[i];
+            auto [tx, ty] = rect[(i + 1) & 3];
+            int dx = x < tx ? 1 : (x > tx ? -1 : 0);
+            int dy = y < ty ? 1 : (y > ty ? -1 : 0);
+            int dir = sgn2dir[dy + 1][dx + 1];
+            while (x != tx || y != ty) {
+                if (used[y][x][dir]) return { 0, {} };
+                x += dx; y += dy;
+            }
+        }
+
+        return { input->ws[p0.y][p0.x], rect };
+    }
+
+    void add_point(int x, int y) {
+        assert(!has_point[y][x]);
+        has_point[y][x] = true;
+        for (int d = 0; d < 8; d++) {
+            next_point[d][y][x] = { x, y };
+            int rd = d ^ 4;
+            int nx = x + dx8[rd], ny = y + dy8[rd];
+            while (!has_point[ny][nx]) {
+                next_point[d][ny][nx] = { x, y };
+                nx += dx8[rd];
+                ny += dy8[rd];
+            }
+        }
+    }
+
+    void add_point(const Point& p) {
+        add_point(p.x, p.y);
     }
 
     void apply_move(const Rect& rect) {
         rects.push_back(rect);
-        assert(!has_point[rect[0].y][rect[0].x]);
-        has_point[rect[0].y][rect[0].x] = true;
+        add_point(rect[0]);
         weight_sum += input->ws[rect[0].y][rect[0].x];
         for (int i = 0; i < 4; i++) {
             auto [x, y] = rect[i];
             auto [tx, ty] = rect[(i + 1) % 4];
             int dx = x < tx ? 1 : (x > tx ? -1 : 0);
             int dy = y < ty ? 1 : (y > ty ? -1 : 0);
-            int dir = -1;
-            for (dir = 0; dir < 8; dir++) if (dx8[dir] == dx && dy8[dir] == dy) break;
-            assert(dir != -1);
+            int dir = sgn2dir[dy + 1][dx + 1];
             while (x != tx || y != ty) {
                 used[y][x][dir] = true;
                 x += dx;
@@ -729,7 +753,7 @@ Output solve(Input2Ptr input) {
         if (timer.elapsed_ms() < 4900) {
             auto state = std::make_shared<State2>(input);
             auto f = [&input, &rnd](const Rect& lhs, const Rect& rhs) {
-                return std::make_pair(-weight(lhs[0], input->N), rnd.next_int()) < std::make_pair(-weight(rhs[0], input->N), rnd.next_int());
+                return std::make_pair(-input->ws[lhs[0].y][lhs[0].x], rnd.next_int()) < std::make_pair(-input->ws[rhs[0].y][rhs[0].x], rnd.next_int());
             };
             while (true) {
                 auto res = state->choose_greedy(f);
@@ -903,13 +927,20 @@ void test2() {
         }
     }
 
-    State2 state(input);
-    for (const auto& rect : output) {
-        state.apply_move(rect);
-    }
-    dump(state.eval());
+    {
+        State2 state(input);
+        for (const auto& rect : output) {
+            state.apply_move(rect);
+        }
+        dump(state.eval());
 
-    dump(std::get<0>(compute_score(input, output)));
+        dump(std::get<0>(compute_score(input, output)));
+    }
+    
+    {
+        State2 state(input);
+        dump(state.check_move({ 15, 18 }, 1));
+    }
 
 }
 
@@ -920,8 +951,8 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
 #endif
 
 #ifdef _MSC_VER
-    std::ifstream ifs(R"(tools_win\in\0000.txt)");
-    std::ofstream ofs(R"(tools_win\out\0000.txt)");
+    std::ifstream ifs(R"(tools_win\in\0005.txt)");
+    std::ofstream ofs(R"(tools_win\out\0005.txt)");
     std::istream& in = ifs;
     std::ostream& out = ofs;
 #else
