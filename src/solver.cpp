@@ -243,6 +243,17 @@ inline int weight(const Point& p, int N) {
 
 using Rect = array<Point, 4>;
 
+inline int area(const Rect& rect) {
+    if (rect[0].x == rect[1].x || rect[0].y == rect[1].y) {
+        int d1 = abs(rect[0].x - rect[1].x) + abs(rect[0].y - rect[1].y);
+        int d2 = abs(rect[0].x - rect[3].x) + abs(rect[0].y - rect[3].y);
+        return d1 * d2;
+    }
+    int d1 = abs(rect[0].x - rect[1].x) + abs(rect[0].y - rect[1].y);
+    int d2 = abs(rect[0].x - rect[3].x) + abs(rect[0].y - rect[3].y);
+    return d1 * d2 / 2;
+}
+
 struct Input;
 using InputPtr = std::shared_ptr<Input>;
 struct Input {
@@ -333,19 +344,19 @@ struct State {
         if (has_point[rect[0].y][rect[0].x]) return 0;
         int dx01 = rect[1].x - rect[0].x, dy01 = rect[1].y - rect[0].y;
         int dx03 = rect[3].x - rect[0].x, dy03 = rect[3].y - rect[0].y;
-        if (dx01 * dx03 + dy01 * dy03 != 0) return 0;
-        if (dx01 != 0 && dy01 != 0 && abs(dx01) != abs(dy01)) return 0;
-        if (rect[1].x + dx03 != rect[2].x || rect[1].y + dy03 != rect[2].y) return 0;
+        if (dx01 * dx03 + dy01 * dy03) return 0;
+        if ((dx01 != 0) & (dy01 != 0) & (abs(dx01) != abs(dy01))) return 0;
+        if ((rect[1].x + dx03 != rect[2].x) | (rect[1].y + dy03 != rect[2].y)) return 0;
         for (int i = 0; i < 4; i++) {
             auto [x, y] = rect[i];
             auto [tx, ty] = rect[(i + 1) % 4];
             int dx = x < tx ? 1 : (x > tx ? -1 : 0);
             int dy = y < ty ? 1 : (y > ty ? -1 : 0);
             int dir = -1;
-            for (dir = 0; dir < 8; dir++) if (dx8[dir] == dx && dy8[dir] == dy) break;
+            for (dir = 0; dir < 8; dir++) if ((dx8[dir] == dx) & (dy8[dir] == dy)) break;
             assert(dir != -1);
             while (x != tx || y != ty) {
-                if ((rect[i].x != x || rect[i].y != y) && has_point[y][x]) return 0;
+                if (((rect[i].x != x) | (rect[i].y != y)) & has_point[y][x]) return 0;
                 if (used[y][x][dir]) return 0;
                 x += dx;
                 y += dy;
@@ -376,8 +387,9 @@ struct State {
         }
     }
 
-    vector<std::pair<int, Rect>> enum_moves_with_weight(int count_limit = INT_MAX) const {
-        vector<std::pair<int, Rect>> res;
+    template<typename F>
+    std::pair<bool, Rect> choose_greedy(const F& pred) const {
+        vector<Rect> cands;
         vector<Point> ps;
         for (int y = 0; y < input->N; y++) {
             for (int x = 0; x < input->N; x++) {
@@ -397,9 +409,9 @@ struct State {
                     if (has_point[p0.y][p0.x] ^ has_point[p2.y][p2.x]) {
                         if (has_point[p0.y][p0.x]) std::swap(p0, p2);
                         // p0: false
-                        if (int w = check_move_fast({ p0,p1,p2,p3 })) {
-                            res.emplace_back(w, Rect{p0, p1, p2, p3});
-                            if (count_limit == (int)res.size()) return res;
+                        Rect rect{ p0, p1, p2, p3 };
+                        if (check_move_fast(rect)) {
+                            cands.push_back(rect);
                         }
                     }
                 }
@@ -418,15 +430,20 @@ struct State {
                     if (has_point[p0.y][p0.x] ^ has_point[p2.y][p2.x]) {
                         if (has_point[p0.y][p0.x]) std::swap(p0, p2);
                         // p0: false
-                        if (int w = check_move_fast({ p0,p1,p2,p3 })) {
-                            res.emplace_back(w, Rect{ p0, p1, p2, p3 });
-                            if (count_limit == (int)res.size()) return res;
+                        Rect rect{ p0, p1, p2, p3 };
+                        if (check_move_fast(rect)) {
+                            cands.push_back(rect);
                         }
                     }
                 }
             }
         }
-        return res;
+        if (cands.empty()) return { false, Rect() };
+        Rect best = cands.front();
+        for (int i = 1; i < (int)cands.size(); i++) {
+            if (!pred(best, cands[i])) best = cands[i];
+        }
+        return { true, best };
     }
 
 };
@@ -474,14 +491,42 @@ struct Output {
 
 Output solve(InputPtr input) {
     Timer timer;
-    auto state = std::make_shared<State>(input);
-    while (true) {
-        auto cands = state->enum_moves_with_weight();
-        if (cands.empty()) break;
-        std::stable_sort(cands.begin(), cands.end(), [](const auto& lhs, const auto& rhs) { return lhs.first > rhs.first; });
-        state->apply_move(cands.front().second);
+    StatePtr best_state = nullptr;
+    int best_score = -1;
+    Xorshift rnd;
+    while (timer.elapsed_ms() < 4900) {
+        if (timer.elapsed_ms() < 4900) {
+            auto state = std::make_shared<State>(input);
+            auto f = [&input, &rnd](const Rect& lhs, const Rect& rhs) {
+                return std::make_pair(-weight(lhs[0], input->N), rnd.next_int()) < std::make_pair(-weight(rhs[0], input->N), rnd.next_int());
+            };
+            while (true) {
+                auto res = state->choose_greedy(f);
+                if (!res.first) break;
+                state->apply_move(res.second);
+                if (timer.elapsed_ms() > 4900) break;
+            }
+            if (chmax(best_score, state->eval())) {
+                best_state = state;
+            }
+        }
+        if (timer.elapsed_ms() < 4900) {
+            auto state = std::make_shared<State>(input);
+            auto f = [&input, &rnd](const Rect& lhs, const Rect& rhs) {
+                return std::make_pair(area(lhs), rnd.next_int()) < std::make_pair(area(rhs), rnd.next_int());
+            };
+            while (true) {
+                auto res = state->choose_greedy(f);
+                if (!res.first) break;
+                state->apply_move(res.second);
+                if (timer.elapsed_ms() > 4900) break;
+            }
+            if (chmax(best_score, state->eval())) {
+                best_state = state;
+            }
+        }
     }
-    return { state->rects, timer.elapsed_ms() };
+    return { best_state->rects, timer.elapsed_ms() };
 }
 
 #ifdef _MSC_VER
@@ -578,8 +623,6 @@ void test() {
     {
         State state(input);
         dump(state.eval());
-        auto res = state.enum_moves_with_weight();
-        dump(res.size());
     }
 
     auto [score, err, state] = compute_score(input, output);
