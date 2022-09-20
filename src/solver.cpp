@@ -269,6 +269,17 @@ inline int area(const Rect& rect) {
     return d1 * d2 / 2;
 }
 
+inline int perimeter(const Rect& rect) {
+    if (rect[0].x == rect[1].x || rect[0].y == rect[1].y) {
+        int d1 = abs(rect[0].x - rect[1].x) + abs(rect[0].y - rect[1].y);
+        int d2 = abs(rect[0].x - rect[3].x) + abs(rect[0].y - rect[3].y);
+        return d1 + d2;
+    }
+    int d1 = abs(rect[0].x - rect[1].x);
+    int d2 = abs(rect[0].x - rect[3].x);
+    return d1 + d2;
+}
+
 struct Input;
 using InputPtr = std::shared_ptr<Input>;
 struct Input {
@@ -731,14 +742,15 @@ Output solve(InputPtr input) {
     int best_score = -1;
 
     Xorshift rnd;
-    State init_state(input);
+    State init_state(input); 
 
     int outer_loop = 0;
-    while (timer.elapsed_ms() < 4900) {
-        if (timer.elapsed_ms() < 4900) {
+    constexpr int timelimit = 4900;
+    while (timer.elapsed_ms() < timelimit) {
+        if (timer.elapsed_ms() < timelimit) {
             auto state(init_state);
             auto f = [&input, &rnd](const Rect& lhs, const Rect& rhs) {
-                return std::make_pair(-input->ws[lhs[0].y][lhs[0].x], rnd.next_int()) < std::make_pair(-input->ws[rhs[0].y][rhs[0].x], rnd.next_int());
+                return std::make_pair(perimeter(lhs), rnd.next_int()) < std::make_pair(perimeter(rhs), rnd.next_int());
             };
             vector<Rect> rects;
             while (true) {
@@ -746,24 +758,7 @@ Output solve(InputPtr input) {
                 if (!ok) break;
                 rects.push_back(rect);
                 state.apply_move(rect);
-                if (timer.elapsed_ms() > 4900) break;
-            }
-            if (chmax(best_score, state.eval())) {
-                best_rects = rects;
-            }
-        }
-        if (timer.elapsed_ms() < 4900) {
-            auto state(init_state);
-            auto f = [&input, &rnd](const Rect& lhs, const Rect& rhs) {
-                return std::make_pair(area(lhs), rnd.next_int()) < std::make_pair(area(rhs), rnd.next_int());
-            };
-            vector<Rect> rects;
-            while (true) {
-                auto [ok, rect] = state.choose_greedy(f);
-                if (!ok) break;
-                rects.push_back(rect);
-                state.apply_move(rect);
-                if (timer.elapsed_ms() > 4900) break;
+                if (timer.elapsed_ms() > timelimit) break;
             }
             if (chmax(best_score, state.eval())) {
                 best_rects = rects;
@@ -894,8 +889,8 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
 #endif
 
 #ifdef _MSC_VER
-    std::ifstream ifs(R"(tools_win\in\0005.txt)");
-    std::ofstream ofs(R"(tools_win\out\0005.txt)");
+    std::ifstream ifs(R"(tools_win\in\0098.txt)");
+    std::ofstream ofs(R"(tools_win\out\0098.txt)");
     std::istream& in = ifs;
     std::ostream& out = ofs;
 #else
@@ -903,7 +898,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     std::ostream& out = cout;
 #endif
 
-#if 1
+#if 0
     batch_test();
 #else
     auto input = std::make_shared<Input>(in);
