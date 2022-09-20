@@ -302,15 +302,14 @@ struct State {
     InputPtr input;
     int N;
 
-    vector<vector<bool>> has_point; // 外周は印が付いているとする
-    vector<vector<Point>> next_point[8]; // (x,y) から d 方向に進んで初めて印に衝突する点
-    vector<vector<array<bool, 8>>> used;
+    vector<vector<bool>> has_point; // 外周は印が付いているとする TODO: uint64_t?
+    array<array<array<Point, 64>, 64>, 8> next_point; // (x,y) から d 方向に進んで初めて印に衝突する点
 
     // 0: left to right
-    // 1: bottom-left to top-right
+    // 1: top-left to bottom-right
     // 2: top to down
-    // 3: bottom-right to top-left
-    uint64_t used_bit[4][128];
+    // 3: top-right to bottom-left
+    array<array<uint64_t, 128>, 4> used_bit;
 
     vector<std::pair<int, Rect>> cands; // (dir, rect)
     int weight_sum;
@@ -318,15 +317,15 @@ struct State {
     State(InputPtr input) : input(input), N(input->N) {
         has_point.resize(N + 2, vector<bool>(N + 2, true));
         for (int y = 1; y <= N; y++) for (int x = 1; x <= N; x++) has_point[y][x] = false;
-        used.resize(N + 2, vector<array<bool, 8>>(N + 2));
-        std::memset(used_bit, 0, sizeof(uint64_t) * 4 * 128);
+        //used.resize(N + 2, vector<array<bool, 8>>(N + 2));
+        std::memset(used_bit.data(), 0, sizeof(uint64_t) * 4 * 128);
         weight_sum = input->Q;
         for (const auto& [x, y] : input->ps) {
             has_point[y][x] = true;
         }
-        for (int d = 0; d < 8; d++) {
-            next_point[d].resize(N + 2, vector<Point>(N + 2));
-        }
+        //for (int d = 0; d < 8; d++) {
+        //    next_point[d].resize(N + 2, vector<Point>(N + 2));
+        //}
         for (int sy = 1; sy <= N; sy++) {
             for (int sx = 1; sx <= N; sx++) {
                 for (int d = 0; d < 8; d++) {
@@ -421,7 +420,7 @@ struct State {
         }
     }
 
-    bool is_overlap(Point p0, int dir, int dist) const {
+    bool is_overlapped(Point p0, int dir, int dist) const {
         Point p1 = p0.next(dir, dist);
         if (dir >= 4) {
             std::swap(p0, p1);
@@ -449,12 +448,7 @@ struct State {
         return used_bit[3][r] & mask;
     }
 
-    bool is_valid_rect(const Rect& rect) const {
-        //assert(is_valid_rect1(rect) == is_valid_rect2(rect));
-        return is_valid_rect2(rect);
-    }
-
-    bool is_valid_rect1(const Rect& rect) const {
+    bool is_overlapped(const Rect& rect) const {
         // 他の長方形との共通部分が存在しないなら true
         for (int i = 0; i < 4; i++) {
             auto [x, y] = rect[i];
@@ -462,25 +456,9 @@ struct State {
             int dx = x < tx ? 1 : (x > tx ? -1 : 0);
             int dy = y < ty ? 1 : (y > ty ? -1 : 0);
             int dir = sgn2dir[dy + 1][dx + 1];
-            while (x != tx || y != ty) {
-                if (used[y][x][dir]) return false;
-                x += dx; y += dy;
-            }
+            if (is_overlapped(rect[i], dir, std::max(abs(x - tx), abs(y - ty)))) return true;
         }
-        return true;
-    }
-
-    bool is_valid_rect2(const Rect& rect) const {
-        // 他の長方形との共通部分が存在しないなら true
-        for (int i = 0; i < 4; i++) {
-            auto [x, y] = rect[i];
-            auto [tx, ty] = rect[(i + 1) & 3];
-            int dx = x < tx ? 1 : (x > tx ? -1 : 0);
-            int dy = y < ty ? 1 : (y > ty ? -1 : 0);
-            int dir = sgn2dir[dy + 1][dx + 1];
-            if (is_overlap(rect[i], dir, std::max(abs(x - tx), abs(y - ty)))) return false;
-        }
-        return true;
+        return false;
     }
 
     std::pair<bool, Rect> calc_rect(const Point& p0, int dir0) const {
@@ -515,7 +493,7 @@ struct State {
 
         // 4. 他の長方形との共通部分は存在してはいけない
         Rect rect{ p0, p1, p2, p3 };
-        if (!is_valid_rect(rect)) return { 0, {} };
+        if (is_overlapped(rect)) return { 0, {} };
 
         return { input->ws[p0.y][p0.x], rect };
     }
@@ -547,7 +525,7 @@ struct State {
             auto [x, y] = p0.next((d + 2) & 7);
             if (next_point[(d + 2) & 7][y][x] != p3) return { false, {} };
         }
-        if (!is_valid_rect({ p0, p1, p2, p3 })) return { false, {} };
+        if (is_overlapped({ p0, p1, p2, p3 })) return { false, {} };
         return { true, {p0, p1, p2, p3} };
     }
 
@@ -577,7 +555,7 @@ struct State {
             auto [x, y] = p0.next((d + 2) & 7);
             if (next_point[(d + 2) & 7][y][x] != p3) return { false, {} };
         }
-        if (!is_valid_rect({ p0, p1, p2, p3 })) return { false, {} };
+        if (is_overlapped({ p0, p1, p2, p3 })) return { false, {} };
         return { true, {p0, p1, p2, p3} };
     }
 
@@ -607,7 +585,7 @@ struct State {
             auto [x, y] = p0.next((d + 2) & 7);
             if (next_point[(d + 2) & 7][y][x] != p3) return { false, {} };
         }
-        if (!is_valid_rect({ p0, p1, p2, p3 })) return { false, {} };
+        if (is_overlapped({ p0, p1, p2, p3 })) return { false, {} };
         return { true, {p0, p1, p2, p3} };
     }
 
@@ -662,12 +640,6 @@ struct State {
             int dy = y < ty ? 1 : (y > ty ? -1 : 0);
             int dir = sgn2dir[dy + 1][dx + 1];
             draw_line(rect[i], dir, std::max(abs(x - tx), abs(y - ty)));
-            while (x != tx || y != ty) {
-                used[y][x][dir] = true;
-                x += dx;
-                y += dy;
-                used[y][x][dir ^ 4] = true;
-            }
         }
         remove_cands();
         add_cands(rect[0]);
@@ -799,7 +771,7 @@ Output solve(InputPtr input) {
         }
         outer_loop++;
     }
-    dump(outer_loop);
+    //dump(outer_loop);
     return { best_rects, timer.elapsed_ms() };
 }
 
@@ -931,7 +903,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     std::ostream& out = cout;
 #endif
 
-#if 0
+#if 1
     batch_test();
 #else
     auto input = std::make_shared<Input>(in);
