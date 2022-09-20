@@ -305,7 +305,7 @@ struct State {
     vector<vector<bool>> has_point; // 外周は印が付いているとする
     vector<vector<Point>> next_point[8]; // (x,y) から d 方向に進んで初めて印に衝突する点
     vector<vector<array<bool, 8>>> used;
-    vector<std::tuple<Point, int, Rect>> cands; // (p0, dir, rect)
+    vector<std::pair<int, Rect>> cands; // (dir, rect)
     int weight_sum;
 
     State(InputPtr input) : input(input), N(input->N) {
@@ -335,14 +335,14 @@ struct State {
                 for (int dir = 0; dir < 8; dir++) {
                     auto [ok, rect] = calc_rect(p0, dir);
                     if (!ok) continue;
-                    cands.emplace_back(p0, dir, rect);
+                    cands.emplace_back(dir, rect);
                 }
             }
         }
     }
 
-    vector<std::tuple<Point, int, Rect>> enum_cands_naive() const {
-        vector<std::tuple<Point, int, Rect>> cands;
+    vector<std::pair<int, Rect>> enum_cands_naive() const {
+        vector<std::pair<int, Rect>> cands;
         for (int y = 1; y <= input->N; y++) {
             for (int x = 1; x <= input->N; x++) {
                 if (has_point[y][x]) continue;
@@ -350,7 +350,7 @@ struct State {
                 for (int dir = 0; dir < 8; dir++) {
                     auto [ok, rect] = calc_rect(p0, dir);
                     if (!ok) continue;
-                    cands.emplace_back(p0, dir, rect);
+                    cands.emplace_back(dir, rect);
                 }
             }
         }
@@ -519,21 +519,23 @@ struct State {
             bool ok;
             Rect rect;
             std::tie(ok, rect) = check_p1(p, d);
-            if (ok) cands.emplace_back(rect[0], d, rect);
+            if (ok) cands.emplace_back(d, rect);
             std::tie(ok, rect) = check_p2(p, d);
-            if (ok) cands.emplace_back(rect[0], d, rect);
+            if (ok) cands.emplace_back(d, rect);
             std::tie(ok, rect) = check_p3(p, d);
-            if (ok) cands.emplace_back(rect[0], d, rect);
+            if (ok) cands.emplace_back(d, rect);
         }
     }
 
     void remove_cands() {
         // invalid になった長方形を弾く
-        std::sort(cands.begin(), cands.end()); // 重要っぽい
-        vector<std::tuple<Point, int, Rect>> new_cands;
-        for (const auto& [p, d, rect] : cands) {
-            if (has_point[p.y][p.x] || !calc_rect(p, d).first) continue;
-            new_cands.emplace_back(p, d, rect);
+        std::sort(cands.begin(), cands.end(), [](const auto& rhs, const auto& lhs) {
+            return rhs.second[0] == lhs.second[0] ? rhs.first < lhs.first : rhs.second[0] < lhs.second[0];
+            }); // 重要っぽい
+        vector<std::pair<int, Rect>> new_cands;
+        for (const auto& [d, rect] : cands) {
+            if (has_point[rect[0].y][rect[0].x] || !calc_rect(rect[0], d).first) continue;
+            new_cands.emplace_back(d, rect);
         }
         cands = new_cands;
     }
@@ -575,17 +577,37 @@ struct State {
     }
 
     // ある印を付けた際の候補点の増減
-    int calc_move_score(const Point& p0, int dir0) {
+    int calc_move_score(const Rect& rect) const {
         State state(*this);
+        int prev_cands = state.cands.size();
+        state.apply_move(rect);
+        int now_cands = state.cands.size();
+        return now_cands - prev_cands;
+    }
 
+    vector<Rect> solve_greedy() {
+        vector<Rect> ans;
+        while (!cands.empty()) {
+            Rect best_rect;
+            int best_diff = INT_MIN;
+            for (const auto& [_, rect] : cands) {
+                int diff = calc_move_score(rect);
+                if (chmax(best_diff, diff)) {
+                    best_rect = rect;
+                }
+            }
+            apply_move(best_rect);
+            ans.push_back(best_rect);
+        }
+        return ans;
     }
 
     template<typename F>
     std::pair<bool, Rect> choose_greedy(const F& pred) const {
         if (cands.empty()) return { false, Rect() };
-        Rect best = std::get<2>(cands.front());
+        Rect best = cands.front().second;
         for (int i = 1; i < (int)cands.size(); i++) {
-            if (!pred(best, std::get<2>(cands[i]))) best = std::get<2>(cands[i]);
+            if (!pred(best, cands[i].second)) best = cands[i].second;
         }
         return { true, best };
     }
@@ -634,7 +656,6 @@ struct Output {
 
 Output solve(InputPtr input) {
     Timer timer;
-    //StatePtr best_state = nullptr;
     vector<Rect> best_rects;
     int best_score = -1;
     Xorshift rnd;
