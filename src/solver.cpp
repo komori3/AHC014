@@ -305,8 +305,7 @@ struct State {
     vector<vector<bool>> has_point; // 外周は印が付いているとする
     vector<vector<Point>> next_point[8]; // (x,y) から d 方向に進んで初めて印に衝突する点
     vector<vector<array<bool, 8>>> used;
-    vector<std::pair<Point, int>> cands;
-    vector<Rect> rects;
+    vector<std::tuple<Point, int, Rect>> cands; // (p0, dir, rect)
     int weight_sum;
 
     State(InputPtr input) : input(input), N(input->N) {
@@ -334,24 +333,24 @@ struct State {
                 if (has_point[y][x]) continue;
                 Point p0(x, y);
                 for (int dir = 0; dir < 8; dir++) {
-                    auto res = check_move(p0, dir);
-                    if (!res.first) continue;
-                    cands.emplace_back(p0, dir);
+                    auto [ok, rect] = calc_rect(p0, dir);
+                    if (!ok) continue;
+                    cands.emplace_back(p0, dir, rect);
                 }
             }
         }
     }
 
-    vector<std::pair<Point, int>> enum_cands_naive() const {
-        vector<std::pair<Point, int>> cands;
+    vector<std::tuple<Point, int, Rect>> enum_cands_naive() const {
+        vector<std::tuple<Point, int, Rect>> cands;
         for (int y = 1; y <= input->N; y++) {
             for (int x = 1; x <= input->N; x++) {
                 if (has_point[y][x]) continue;
                 Point p0(x, y);
                 for (int dir = 0; dir < 8; dir++) {
-                    auto res = check_move(p0, dir);
-                    if (!res.first) continue;
-                    cands.emplace_back(p0, dir);
+                    auto [ok, rect] = calc_rect(p0, dir);
+                    if (!ok) continue;
+                    cands.emplace_back(p0, dir, rect);
                 }
             }
         }
@@ -386,7 +385,7 @@ struct State {
         return true;
     }
 
-    std::pair<bool, Rect> check_move(const Point& p0, int dir0) const {
+    std::pair<bool, Rect> calc_rect(const Point& p0, int dir0) const {
         assert(!has_point[p0.y][p0.x]);
         int dir1 = (dir0 + 2) & 7;
         // p0 から dir0, dir1 方向に進んで初めて衝突する点を p1, p3 とする
@@ -423,116 +422,118 @@ struct State {
         return { input->ws[p0.y][p0.x], rect };
     }
 
-    Point check_p1(const Point& p1, int d) const {
+    std::pair<bool, Rect> check_p1(const Point& p1, int d) const {
         // 構成可能なら p0 の座標を返す
         int nd = (d + 2) & 7;
         Point p2;
         {
             auto [x, y] = p1.next(nd);
             p2 = next_point[nd][y][x];
-            if (!is_inside(p2)) return { -1, -1 };
+            if (!is_inside(p2)) return { false, {} };
         }
         nd = (nd + 2) & 7;
         Point p3;
         {
             auto [x, y] = p2.next(nd);
             p3 = next_point[nd][y][x];
-            if (!is_inside(p3)) return { -1, -1 };
+            if (!is_inside(p3)) return { false, {} };
         }
         Point p0(p1.x + p3.x - p2.x, p1.y + p3.y - p2.y);
-        if (!is_inside(p0) || has_point[p0.y][p0.x]) return { -1, -1 };
+        if (!is_inside(p0) || has_point[p0.y][p0.x]) return { false, {} };
         // p0->p1, p0->p3 間に印はない
         {
             auto [x, y] = p0.next(d);
-            if (next_point[d][y][x] != p1) return { -1, -1 };
+            if (next_point[d][y][x] != p1) return { false, {} };
         }
         {
             auto [x, y] = p0.next((d + 2) & 7);
-            if (next_point[(d + 2) & 7][y][x] != p3) return { -1, -1 };
+            if (next_point[(d + 2) & 7][y][x] != p3) return { false, {} };
         }
-        if (!is_valid_rect({ p0, p1, p2, p3 })) return { -1, -1 };
-        return p0;
+        if (!is_valid_rect({ p0, p1, p2, p3 })) return { false, {} };
+        return { true, {p0, p1, p2, p3} };
     }
 
-    Point check_p2(const Point& p2, int d) const {
+    std::pair<bool, Rect> check_p2(const Point& p2, int d) const {
         int nd = (d + 4) & 7;
         Point p3;
         {
             auto [x, y] = p2.next(nd);
             p3 = next_point[nd][y][x];
-            if (!is_inside(p3)) return { -1, -1 };
+            if (!is_inside(p3)) return { false, {} };
         }
         nd = (nd + 2) & 7;
         Point p1;
         {
             auto [x, y] = p2.next(nd);
             p1 = next_point[nd][y][x];
-            if (!is_inside(p1)) return { -1, -1 };
+            if (!is_inside(p1)) return { false, {} };
         }
         Point p0(p1.x + p3.x - p2.x, p1.y + p3.y - p2.y);
-        if (!is_inside(p0) || has_point[p0.y][p0.x]) return { -1, -1 };
+        if (!is_inside(p0) || has_point[p0.y][p0.x]) return { false, {} };
         // p0->p1, p0->p3 間に印はない
         {
             auto [x, y] = p0.next(d);
-            if (next_point[d][y][x] != p1) return { -1, -1 };
+            if (next_point[d][y][x] != p1) return { false, {} };
         }
         {
             auto [x, y] = p0.next((d + 2) & 7);
-            if (next_point[(d + 2) & 7][y][x] != p3) return { -1, -1 };
+            if (next_point[(d + 2) & 7][y][x] != p3) return { false, {} };
         }
-        if (!is_valid_rect({ p0, p1, p2, p3 })) return { -1, -1 };
-        return p0;
+        if (!is_valid_rect({ p0, p1, p2, p3 })) return { false, {} };
+        return { true, {p0, p1, p2, p3} };
     }
 
-    Point check_p3(const Point& p3, int d) {
+    std::pair<bool, Rect> check_p3(const Point& p3, int d) {
         int nd = d;
         Point p2;
         {
             auto [x, y] = p3.next(nd);
             p2 = next_point[nd][y][x];
-            if (!is_inside(p2)) return { -1, -1 };
+            if (!is_inside(p2)) return { false, {} };
         }
         nd = (nd + 6) & 7;
         Point p1;
         {
             auto [x, y] = p2.next(nd);
             p1 = next_point[nd][y][x];
-            if (!is_inside(p1)) return { -1, -1 };
+            if (!is_inside(p1)) return { false, {} };
         }
         Point p0(p3.x + p1.x - p2.x, p3.y + p1.y - p2.y);
-        if (!is_inside(p0) || has_point[p0.y][p0.x]) return { -1, -1 };
+        if (!is_inside(p0) || has_point[p0.y][p0.x]) return { false, {} };
         // p0->p1, p0->p3 間に印はない
         {
             auto [x, y] = p0.next(d);
-            if (next_point[d][y][x] != p1) return { -1, -1 };
+            if (next_point[d][y][x] != p1) return { false, {} };
         }
         {
             auto [x, y] = p0.next((d + 2) & 7);
-            if (next_point[(d + 2) & 7][y][x] != p3) return { -1, -1 };
+            if (next_point[(d + 2) & 7][y][x] != p3) return { false, {} };
         }
-        if (!is_valid_rect({ p0, p1, p2, p3 })) return { -1, -1 };
-        return p0;
+        if (!is_valid_rect({ p0, p1, p2, p3 })) return { false, {} };
+        return { true, {p0, p1, p2, p3} };
     }
 
     void add_cands(const Point& p) {
         // p に印を追加したことで構成できるようになった長方形を調べる
         for (int d = 0; d < 8; d++) {
-            auto p0 = check_p1(p, d);
-            if (p0.x != -1) cands.emplace_back(p0, d);
-            p0 = check_p2(p, d);
-            if (p0.x != -1) cands.emplace_back(p0, d);
-            p0 = check_p3(p, d);
-            if (p0.x != -1) cands.emplace_back(p0, d);
+            bool ok;
+            Rect rect;
+            std::tie(ok, rect) = check_p1(p, d);
+            if (ok) cands.emplace_back(rect[0], d, rect);
+            std::tie(ok, rect) = check_p2(p, d);
+            if (ok) cands.emplace_back(rect[0], d, rect);
+            std::tie(ok, rect) = check_p3(p, d);
+            if (ok) cands.emplace_back(rect[0], d, rect);
         }
     }
 
     void remove_cands() {
         // invalid になった長方形を弾く
         std::sort(cands.begin(), cands.end()); // 重要っぽい
-        vector<std::pair<Point, int>> new_cands;
-        for (const auto& [p, d] : cands) {
-            if (has_point[p.y][p.x] || !check_move(p, d).first) continue;
-            new_cands.emplace_back(p, d);
+        vector<std::tuple<Point, int, Rect>> new_cands;
+        for (const auto& [p, d, rect] : cands) {
+            if (has_point[p.y][p.x] || !calc_rect(p, d).first) continue;
+            new_cands.emplace_back(p, d, rect);
         }
         cands = new_cands;
     }
@@ -554,7 +555,6 @@ struct State {
     }
 
     void apply_move(const Rect& rect) {
-        rects.push_back(rect);
         add_point(rect[0]);
         weight_sum += input->ws[rect[0].y][rect[0].x];
         for (int i = 0; i < 4; i++) {
@@ -574,18 +574,18 @@ struct State {
         add_cands(rect[0]);
     }
 
+    // ある印を付けた際の候補点の増減
+    int calc_move_score(const Point& p0, int dir0) {
+        State state(*this);
+
+    }
+
     template<typename F>
     std::pair<bool, Rect> choose_greedy(const F& pred) const {
-        vector<Rect> cand_rects;
-        for (const auto& [p0, dir0] : cands) {
-            auto res = check_move(p0, dir0);
-            if (!res.first) continue;
-            cand_rects.push_back(res.second);
-        }
-        if (cand_rects.empty()) return { false, Rect() };
-        Rect best = cand_rects.front();
-        for (int i = 1; i < (int)cand_rects.size(); i++) {
-            if (!pred(best, cand_rects[i])) best = cand_rects[i];
+        if (cands.empty()) return { false, Rect() };
+        Rect best = std::get<2>(cands.front());
+        for (int i = 1; i < (int)cands.size(); i++) {
+            if (!pred(best, std::get<2>(cands[i]))) best = std::get<2>(cands[i]);
         }
         return { true, best };
     }
@@ -634,7 +634,8 @@ struct Output {
 
 Output solve(InputPtr input) {
     Timer timer;
-    StatePtr best_state = nullptr;
+    //StatePtr best_state = nullptr;
+    vector<Rect> best_rects;
     int best_score = -1;
     Xorshift rnd;
     int outer_loop = 0;
@@ -644,14 +645,16 @@ Output solve(InputPtr input) {
             auto f = [&input, &rnd](const Rect& lhs, const Rect& rhs) {
                 return std::make_pair(-input->ws[lhs[0].y][lhs[0].x], rnd.next_int()) < std::make_pair(-input->ws[rhs[0].y][rhs[0].x], rnd.next_int());
             };
+            vector<Rect> rects;
             while (true) {
-                auto res = state->choose_greedy(f);
-                if (!res.first) break;
-                state->apply_move(res.second);
+                auto [ok, rect] = state->choose_greedy(f);
+                if (!ok) break;
+                rects.push_back(rect);
+                state->apply_move(rect);
                 if (timer.elapsed_ms() > 4900) break;
             }
             if (chmax(best_score, state->eval())) {
-                best_state = state;
+                best_rects = rects;
             }
         }
         if (timer.elapsed_ms() < 4900) {
@@ -659,19 +662,21 @@ Output solve(InputPtr input) {
             auto f = [&input, &rnd](const Rect& lhs, const Rect& rhs) {
                 return std::make_pair(area(lhs), rnd.next_int()) < std::make_pair(area(rhs), rnd.next_int());
             };
+            vector<Rect> rects;
             while (true) {
-                auto res = state->choose_greedy(f);
-                if (!res.first) break;
-                state->apply_move(res.second);
+                auto [ok, rect] = state->choose_greedy(f);
+                if (!ok) break;
+                rects.push_back(rect);
+                state->apply_move(rect);
                 if (timer.elapsed_ms() > 4900) break;
             }
             if (chmax(best_score, state->eval())) {
-                best_state = state;
+                best_rects = rects;
             }
         }
         outer_loop++;
     }
-    return { best_state->rects, timer.elapsed_ms() };
+    return { best_rects, timer.elapsed_ms() };
 }
 
 #ifdef _MSC_VER
@@ -781,7 +786,7 @@ void test() {
 
     {
         State state(input);
-        dump(state.check_move({ 15, 18 }, 1));
+        dump(state.calc_rect({ 15, 18 }, 1));
     }
 
 }
