@@ -305,6 +305,13 @@ struct State {
     vector<vector<bool>> has_point; // 外周は印が付いているとする
     vector<vector<Point>> next_point[8]; // (x,y) から d 方向に進んで初めて印に衝突する点
     vector<vector<array<bool, 8>>> used;
+
+    // 0: left to right
+    // 1: bottom-left to top-right
+    // 2: top to down
+    // 3: bottom-right to top-left
+    uint64_t used_bit[4][128];
+
     vector<std::pair<int, Rect>> cands; // (dir, rect)
     int weight_sum;
 
@@ -312,6 +319,7 @@ struct State {
         has_point.resize(N + 2, vector<bool>(N + 2, true));
         for (int y = 1; y <= N; y++) for (int x = 1; x <= N; x++) has_point[y][x] = false;
         used.resize(N + 2, vector<array<bool, 8>>(N + 2));
+        std::memset(used_bit, 0, sizeof(uint64_t) * 4 * 128);
         weight_sum = input->Q;
         for (const auto& [x, y] : input->ps) {
             has_point[y][x] = true;
@@ -369,7 +377,84 @@ struct State {
         return is_inside(p.x, p.y);
     }
 
+    void draw_line(Point p0, int dir, int dist) {
+        Point p1 = p0.next(dir, dist);
+        if (dir >= 4) {
+            std::swap(p0, p1);
+            dir ^= 4;
+        }
+        if (dir == 0) {
+            // left to right
+            uint64_t mask = ((1ULL << p1.x) - 1) ^ ((1ULL << p0.x) - 1);
+            used_bit[0][p0.y] |= mask;
+        }
+        else if (dir == 2) {
+            // top to bottom
+            uint64_t mask = ((1ULL << p1.y) - 1) ^ ((1ULL << p0.y) - 1);
+            used_bit[2][p0.x] |= mask;
+        }
+        else if (dir == 1) {
+            // top-left to bottom-right
+            // 0000000
+            // 0111111
+            // 0122222
+            // 0123333
+            // 0123444
+            // 0123455
+            // 0123456
+            int r = N + 1 - p0.x + p0.y, c = std::min(p0.x, p0.y);
+            uint64_t mask = ((1ULL << (c + dist)) - 1) ^ ((1ULL << c) - 1);
+            used_bit[1][r] |= mask;
+        }
+        else {
+            // top-right to bottom-left
+            // 0000000
+            // 1111110
+            // 2222210
+            // 3333210
+            // 4443210
+            // 5543210
+            // 6543210
+            int r = p0.x + p0.y, c = std::min(N + 1 - p0.x, p0.y);
+            uint64_t mask = ((1ULL << (c + dist)) - 1) ^ ((1ULL << c) - 1);
+            used_bit[3][r] |= mask;
+        }
+    }
+
+    bool is_overlap(Point p0, int dir, int dist) const {
+        Point p1 = p0.next(dir, dist);
+        if (dir >= 4) {
+            std::swap(p0, p1);
+            dir ^= 4;
+        }
+        if (dir == 0) {
+            // left to right
+            uint64_t mask = ((1ULL << p1.x) - 1) ^ ((1ULL << p0.x) - 1);
+            return used_bit[0][p0.y] & mask;
+        }
+        else if (dir == 2) {
+            // top to bottom
+            uint64_t mask = ((1ULL << p1.y) - 1) ^ ((1ULL << p0.y) - 1);
+            return used_bit[2][p0.x] & mask;
+        }
+        else if (dir == 1) {
+            // top-left to bottom-right
+            int r = N + 1 - p0.x + p0.y, c = std::min(p0.x, p0.y);
+            uint64_t mask = ((1ULL << (c + dist)) - 1) ^ ((1ULL << c) - 1);
+            return used_bit[1][r] & mask;
+        }
+        // top-right to bottom-left
+        int r = p0.x + p0.y, c = std::min(N + 1 - p0.x, p0.y);
+        uint64_t mask = ((1ULL << (c + dist)) - 1) ^ ((1ULL << c) - 1);
+        return used_bit[3][r] & mask;
+    }
+
     bool is_valid_rect(const Rect& rect) const {
+        //assert(is_valid_rect1(rect) == is_valid_rect2(rect));
+        return is_valid_rect2(rect);
+    }
+
+    bool is_valid_rect1(const Rect& rect) const {
         // 他の長方形との共通部分が存在しないなら true
         for (int i = 0; i < 4; i++) {
             auto [x, y] = rect[i];
@@ -381,6 +466,19 @@ struct State {
                 if (used[y][x][dir]) return false;
                 x += dx; y += dy;
             }
+        }
+        return true;
+    }
+
+    bool is_valid_rect2(const Rect& rect) const {
+        // 他の長方形との共通部分が存在しないなら true
+        for (int i = 0; i < 4; i++) {
+            auto [x, y] = rect[i];
+            auto [tx, ty] = rect[(i + 1) & 3];
+            int dx = x < tx ? 1 : (x > tx ? -1 : 0);
+            int dy = y < ty ? 1 : (y > ty ? -1 : 0);
+            int dir = sgn2dir[dy + 1][dx + 1];
+            if (is_overlap(rect[i], dir, std::max(abs(x - tx), abs(y - ty)))) return false;
         }
         return true;
     }
@@ -529,15 +627,13 @@ struct State {
 
     void remove_cands() {
         // invalid になった長方形を弾く
-        std::sort(cands.begin(), cands.end(), [](const auto& rhs, const auto& lhs) {
-            return rhs.second[0] == lhs.second[0] ? rhs.first < lhs.first : rhs.second[0] < lhs.second[0];
-            }); // 重要っぽい
-        vector<std::pair<int, Rect>> new_cands;
-        for (const auto& [d, rect] : cands) {
+        int new_size = 0;
+        for (int i = 0; i < (int)cands.size(); i++) {
+            const auto& [d, rect] = cands[i];
             if (has_point[rect[0].y][rect[0].x] || !calc_rect(rect[0], d).first) continue;
-            new_cands.emplace_back(d, rect);
+            cands[new_size++] = cands[i];
         }
-        cands = new_cands;
+        cands.erase(cands.begin() + new_size, cands.end());
     }
 
     void add_point(const Point& p) {
@@ -565,6 +661,7 @@ struct State {
             int dx = x < tx ? 1 : (x > tx ? -1 : 0);
             int dy = y < ty ? 1 : (y > ty ? -1 : 0);
             int dir = sgn2dir[dy + 1][dx + 1];
+            draw_line(rect[i], dir, std::max(abs(x - tx), abs(y - ty)));
             while (x != tx || y != ty) {
                 used[y][x][dir] = true;
                 x += dx;
@@ -655,48 +752,54 @@ struct Output {
 };
 
 Output solve(InputPtr input) {
+
     Timer timer;
+
     vector<Rect> best_rects;
     int best_score = -1;
+
     Xorshift rnd;
+    State init_state(input);
+
     int outer_loop = 0;
     while (timer.elapsed_ms() < 4900) {
         if (timer.elapsed_ms() < 4900) {
-            auto state = std::make_shared<State>(input);
+            auto state(init_state);
             auto f = [&input, &rnd](const Rect& lhs, const Rect& rhs) {
                 return std::make_pair(-input->ws[lhs[0].y][lhs[0].x], rnd.next_int()) < std::make_pair(-input->ws[rhs[0].y][rhs[0].x], rnd.next_int());
             };
             vector<Rect> rects;
             while (true) {
-                auto [ok, rect] = state->choose_greedy(f);
+                auto [ok, rect] = state.choose_greedy(f);
                 if (!ok) break;
                 rects.push_back(rect);
-                state->apply_move(rect);
+                state.apply_move(rect);
                 if (timer.elapsed_ms() > 4900) break;
             }
-            if (chmax(best_score, state->eval())) {
+            if (chmax(best_score, state.eval())) {
                 best_rects = rects;
             }
         }
         if (timer.elapsed_ms() < 4900) {
-            auto state = std::make_shared<State>(input);
+            auto state(init_state);
             auto f = [&input, &rnd](const Rect& lhs, const Rect& rhs) {
                 return std::make_pair(area(lhs), rnd.next_int()) < std::make_pair(area(rhs), rnd.next_int());
             };
             vector<Rect> rects;
             while (true) {
-                auto [ok, rect] = state->choose_greedy(f);
+                auto [ok, rect] = state.choose_greedy(f);
                 if (!ok) break;
                 rects.push_back(rect);
-                state->apply_move(rect);
+                state.apply_move(rect);
                 if (timer.elapsed_ms() > 4900) break;
             }
-            if (chmax(best_score, state->eval())) {
+            if (chmax(best_score, state.eval())) {
                 best_rects = rects;
             }
         }
         outer_loop++;
     }
+    dump(outer_loop);
     return { best_rects, timer.elapsed_ms() };
 }
 
