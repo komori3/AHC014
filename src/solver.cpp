@@ -235,6 +235,9 @@ struct Point {
     Point next(int dir, int distance) const { return { x + dx8[dir] * distance, y + dy8[dir] * distance }; }
     inline bool operator==(const Point& rhs) const { return x == rhs.x && y == rhs.y; }
     inline bool operator!=(const Point& rhs) const { return !(*this == rhs); }
+    inline bool operator<(const Point& rhs) const {
+        return y == rhs.y ? x < rhs.x : y < rhs.y;
+    }
     string stringify() const {
         return "[" + std::to_string(x) + ", " + std::to_string(y) + "]";
     }
@@ -290,6 +293,8 @@ struct Input {
     }
 };
 
+int debug_count = 0;
+
 struct State;
 using StatePtr = std::shared_ptr<State>;
 struct State {
@@ -300,6 +305,7 @@ struct State {
     vector<vector<bool>> has_point; // 外周は印が付いているとする
     vector<vector<Point>> next_point[8]; // (x,y) から d 方向に進んで初めて印に衝突する点
     vector<vector<array<bool, 8>>> used;
+    vector<std::pair<Point, int>> cands;
     vector<Rect> rects;
     int weight_sum;
 
@@ -323,6 +329,33 @@ struct State {
                 }
             }
         }
+        for (int y = 1; y <= input->N; y++) {
+            for (int x = 1; x <= input->N; x++) {
+                if (has_point[y][x]) continue;
+                Point p0(x, y);
+                for (int dir = 0; dir < 8; dir++) {
+                    auto res = check_move(p0, dir);
+                    if (!res.first) continue;
+                    cands.emplace_back(p0, dir);
+                }
+            }
+        }
+    }
+
+    vector<std::pair<Point, int>> enum_cands_naive() const {
+        vector<std::pair<Point, int>> cands;
+        for (int y = 1; y <= input->N; y++) {
+            for (int x = 1; x <= input->N; x++) {
+                if (has_point[y][x]) continue;
+                Point p0(x, y);
+                for (int dir = 0; dir < 8; dir++) {
+                    auto res = check_move(p0, dir);
+                    if (!res.first) continue;
+                    cands.emplace_back(p0, dir);
+                }
+            }
+        }
+        return cands;
     }
 
     int eval() const {
@@ -337,18 +370,34 @@ struct State {
         return is_inside(p.x, p.y);
     }
 
+    bool is_valid_rect(const Rect& rect) const {
+        // 他の長方形との共通部分が存在しないなら true
+        for (int i = 0; i < 4; i++) {
+            auto [x, y] = rect[i];
+            auto [tx, ty] = rect[(i + 1) & 3];
+            int dx = x < tx ? 1 : (x > tx ? -1 : 0);
+            int dy = y < ty ? 1 : (y > ty ? -1 : 0);
+            int dir = sgn2dir[dy + 1][dx + 1];
+            while (x != tx || y != ty) {
+                if (used[y][x][dir]) return false;
+                x += dx; y += dy;
+            }
+        }
+        return true;
+    }
+
     std::pair<bool, Rect> check_move(const Point& p0, int dir0) const {
         assert(!has_point[p0.y][p0.x]);
         int dir1 = (dir0 + 2) & 7;
         // p0 から dir0, dir1 方向に進んで初めて衝突する点を p1, p3 とする
         // p1 から dir1 方向に伸ばした半直線と p3 から dir0 方向に伸ばした半直線の交点を p2 とする
-        
+
         // 1. p1, p3 は印が付いていて、外周ではない
         Point p1 = next_point[dir0][p0.y][p0.x];
-        if (!is_inside(p1)) return {0, {}};
+        if (!is_inside(p1)) return { 0, {} };
         assert(has_point[p1.y][p1.x]);
         Point p3 = next_point[dir1][p0.y][p0.x];
-        if (!is_inside(p3)) return {0, {}};
+        if (!is_inside(p3)) return { 0, {} };
         assert(has_point[p3.y][p3.x]);
 
         // 2. p2 に印が付いている
@@ -369,22 +418,101 @@ struct State {
 
         // 4. 他の長方形との共通部分は存在してはいけない
         Rect rect{ p0, p1, p2, p3 };
-        for (int i = 0; i < 4; i++) {
-            auto [x, y] = rect[i];
-            auto [tx, ty] = rect[(i + 1) & 3];
-            int dx = x < tx ? 1 : (x > tx ? -1 : 0);
-            int dy = y < ty ? 1 : (y > ty ? -1 : 0);
-            int dir = sgn2dir[dy + 1][dx + 1];
-            while (x != tx || y != ty) {
-                if (used[y][x][dir]) return { 0, {} };
-                x += dx; y += dy;
-            }
-        }
+        if (!is_valid_rect(rect)) return { 0, {} };
 
         return { input->ws[p0.y][p0.x], rect };
     }
 
-    void add_point(int x, int y) {
+    Point check_p1(const Point& p1, int d) const {
+        // 構成可能なら p0 の座標を返す
+        int nd = (d + 2) & 7;
+        Point p2;
+        {
+            auto [x, y] = p1.next(nd);
+            p2 = next_point[nd][y][x];
+            if (!is_inside(p2)) return { -1, -1 };
+        }
+        nd = (nd + 2) & 7;
+        Point p3;
+        {
+            auto [x, y] = p2.next(nd);
+            p3 = next_point[nd][y][x];
+            if (!is_inside(p3)) return { -1, -1 };
+        }
+        Point p0(p1.x + p3.x - p2.x, p1.y + p3.y - p2.y);
+        if (!is_inside(p0) || has_point[p0.y][p0.x]) return { -1, -1 };
+        if (!is_valid_rect({ p0, p1, p2, p3 })) return { -1, -1 };
+        return p0;
+    }
+
+    Point check_p2(const Point& p2, int d) const {
+        int nd = (d + 4) & 7;
+        Point p3;
+        {
+            auto [x, y] = p2.next(nd);
+            p3 = next_point[nd][y][x];
+            if (!is_inside(p3)) return { -1, -1 };
+        }
+        nd = (nd + 2) & 7;
+        Point p1;
+        {
+            auto [x, y] = p2.next(nd);
+            p1 = next_point[nd][y][x];
+            if (!is_inside(p1)) return { -1, -1 };
+        }
+        Point p0(p1.x + p3.x - p2.x, p1.y + p3.y - p2.y);
+        if (!is_inside(p0) || has_point[p0.y][p0.x]) return { -1, -1 };
+        if (!is_valid_rect({ p0, p1, p2, p3 })) return { -1, -1 };
+        return p0;
+    }
+
+    Point check_p3(const Point& p3, int d) {
+        int nd = d;
+        Point p2;
+        {
+            auto [x, y] = p3.next(nd);
+            p2 = next_point[nd][y][x];
+            if (!is_inside(p2)) return { -1, -1 };
+        }
+        nd = (nd + 6) & 7;
+        Point p1;
+        {
+            auto [x, y] = p2.next(nd);
+            p1 = next_point[nd][y][x];
+            if (!is_inside(p1)) return { -1, -1 };
+        }
+        Point p0(p3.x + p1.x - p2.x, p3.y + p1.y - p2.y);
+        if (!is_inside(p0) || has_point[p0.y][p0.x]) return { -1, -1 };
+        if (!is_valid_rect({ p0, p1, p2, p3 })) return { -1, -1 };
+        return p0;
+    }
+
+    void add_cands(const Point& p) {
+        // p に印を追加したことで構成できるようになった長方形を調べる
+        for (int d = 0; d < 8; d++) {
+            auto p0 = check_p1(p, d);
+            if (p0.x != -1) cands.emplace_back(p0, d);
+            p0 = check_p2(p, d);
+            if (p0.x != -1) cands.emplace_back(p0, d);
+            p0 = check_p3(p, d);
+            if (p0.x != -1) cands.emplace_back(p0, d);
+        }
+    }
+
+    void remove_cands() {
+        // invalid になった長方形を弾く
+        std::sort(cands.begin(), cands.end());
+        cands.erase(std::unique(cands.begin(), cands.end()), cands.end());
+        vector<std::pair<Point, int>> new_cands;
+        for (const auto& [p, d] : cands) {
+            if (has_point[p.y][p.x] || !check_move(p, d).first) continue;
+            new_cands.emplace_back(p, d);
+        }
+        cands = new_cands;
+    }
+
+    void add_point(const Point& p) {
+        auto [x, y] = p;
         assert(!has_point[y][x]);
         has_point[y][x] = true;
         for (int d = 0; d < 8; d++) {
@@ -397,10 +525,6 @@ struct State {
                 ny += dy8[rd];
             }
         }
-    }
-
-    void add_point(const Point& p) {
-        add_point(p.x, p.y);
     }
 
     void apply_move(const Rect& rect) {
@@ -420,26 +544,32 @@ struct State {
                 used[y][x][dir ^ 4] = true;
             }
         }
+        add_cands(rect[0]);
+        remove_cands();
+        if (false) { // TODO: 要素が重複する原因を調べる
+            auto cands1 = cands;
+            sort(cands1.begin(), cands1.end());
+            auto cands2 = enum_cands_naive();
+            if (cands1 != cands2) {
+                dump(cands1);
+                dump(cands2);
+                assert(false);
+            }
+        }
     }
 
     template<typename F>
     std::pair<bool, Rect> choose_greedy(const F& pred) const {
-        vector<Rect> cands;
-        for (int y = 1; y <= input->N; y++) {
-            for (int x = 1; x <= input->N; x++) {
-                if (has_point[y][x]) continue;
-                Point p0(x, y);
-                for (int dir = 0; dir < 8; dir++) {
-                    auto res = check_move(p0, dir);
-                    if (!res.first) continue;
-                    cands.push_back(res.second);
-                }
-            }
+        vector<Rect> cand_rects;
+        for (const auto& [p0, dir0] : cands) {
+            auto res = check_move(p0, dir0);
+            if (!res.first) continue;
+            cand_rects.push_back(res.second);
         }
-        if (cands.empty()) return { false, Rect() };
-        Rect best = cands.front();
-        for (int i = 1; i < (int)cands.size(); i++) {
-            if (!pred(best, cands[i])) best = cands[i];
+        if (cand_rects.empty()) return { false, Rect() };
+        Rect best = cand_rects.front();
+        for (int i = 1; i < (int)cand_rects.size(); i++) {
+            if (!pred(best, cand_rects[i])) best = cand_rects[i];
         }
         return { true, best };
     }
@@ -491,6 +621,7 @@ Output solve(InputPtr input) {
     StatePtr best_state = nullptr;
     int best_score = -1;
     Xorshift rnd;
+    int outer_loop = 0;
     while (timer.elapsed_ms() < 4900) {
         if (timer.elapsed_ms() < 4900) {
             auto state = std::make_shared<State>(input);
@@ -522,7 +653,9 @@ Output solve(InputPtr input) {
                 best_state = state;
             }
         }
+        outer_loop++;
     }
+    //dump(outer_loop);
     return { best_state->rects, timer.elapsed_ms() };
 }
 
@@ -630,7 +763,7 @@ void test() {
 
         dump(std::get<0>(compute_score(input, output)));
     }
-    
+
     {
         State state(input);
         dump(state.check_move({ 15, 18 }, 1));
@@ -645,8 +778,8 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
 #endif
 
 #ifdef _MSC_VER
-    std::ifstream ifs(R"(tools_win\in\0005.txt)");
-    std::ofstream ofs(R"(tools_win\out\0005.txt)");
+    std::ifstream ifs(R"(tools_win\in\0000.txt)");
+    std::ofstream ofs(R"(tools_win\out\0000.txt)");
     std::istream& in = ifs;
     std::ostream& out = ofs;
 #else
