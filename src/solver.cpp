@@ -441,6 +441,15 @@ struct State {
         }
         Point p0(p1.x + p3.x - p2.x, p1.y + p3.y - p2.y);
         if (!is_inside(p0) || has_point[p0.y][p0.x]) return { -1, -1 };
+        // p0->p1, p0->p3 間に印はない
+        {
+            auto [x, y] = p0.next(d);
+            if (next_point[d][y][x] != p1) return { -1, -1 };
+        }
+        {
+            auto [x, y] = p0.next((d + 2) & 7);
+            if (next_point[(d + 2) & 7][y][x] != p3) return { -1, -1 };
+        }
         if (!is_valid_rect({ p0, p1, p2, p3 })) return { -1, -1 };
         return p0;
     }
@@ -462,6 +471,15 @@ struct State {
         }
         Point p0(p1.x + p3.x - p2.x, p1.y + p3.y - p2.y);
         if (!is_inside(p0) || has_point[p0.y][p0.x]) return { -1, -1 };
+        // p0->p1, p0->p3 間に印はない
+        {
+            auto [x, y] = p0.next(d);
+            if (next_point[d][y][x] != p1) return { -1, -1 };
+        }
+        {
+            auto [x, y] = p0.next((d + 2) & 7);
+            if (next_point[(d + 2) & 7][y][x] != p3) return { -1, -1 };
+        }
         if (!is_valid_rect({ p0, p1, p2, p3 })) return { -1, -1 };
         return p0;
     }
@@ -483,6 +501,15 @@ struct State {
         }
         Point p0(p3.x + p1.x - p2.x, p3.y + p1.y - p2.y);
         if (!is_inside(p0) || has_point[p0.y][p0.x]) return { -1, -1 };
+        // p0->p1, p0->p3 間に印はない
+        {
+            auto [x, y] = p0.next(d);
+            if (next_point[d][y][x] != p1) return { -1, -1 };
+        }
+        {
+            auto [x, y] = p0.next((d + 2) & 7);
+            if (next_point[(d + 2) & 7][y][x] != p3) return { -1, -1 };
+        }
         if (!is_valid_rect({ p0, p1, p2, p3 })) return { -1, -1 };
         return p0;
     }
@@ -501,8 +528,7 @@ struct State {
 
     void remove_cands() {
         // invalid になった長方形を弾く
-        std::sort(cands.begin(), cands.end());
-        cands.erase(std::unique(cands.begin(), cands.end()), cands.end());
+        std::sort(cands.begin(), cands.end()); // 重要っぽい
         vector<std::pair<Point, int>> new_cands;
         for (const auto& [p, d] : cands) {
             if (has_point[p.y][p.x] || !check_move(p, d).first) continue;
@@ -544,18 +570,8 @@ struct State {
                 used[y][x][dir ^ 4] = true;
             }
         }
-        add_cands(rect[0]);
         remove_cands();
-        if (false) { // TODO: 要素が重複する原因を調べる
-            auto cands1 = cands;
-            sort(cands1.begin(), cands1.end());
-            auto cands2 = enum_cands_naive();
-            if (cands1 != cands2) {
-                dump(cands1);
-                dump(cands2);
-                assert(false);
-            }
-        }
+        add_cands(rect[0]);
     }
 
     template<typename F>
@@ -655,7 +671,6 @@ Output solve(InputPtr input) {
         }
         outer_loop++;
     }
-    //dump(outer_loop);
     return { best_state->rects, timer.elapsed_ms() };
 }
 
@@ -778,8 +793,8 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
 #endif
 
 #ifdef _MSC_VER
-    std::ifstream ifs(R"(tools_win\in\0000.txt)");
-    std::ofstream ofs(R"(tools_win\out\0000.txt)");
+    std::ifstream ifs(R"(tools_win\in\0005.txt)");
+    std::ofstream ofs(R"(tools_win\out\0005.txt)");
     std::istream& in = ifs;
     std::ostream& out = ofs;
 #else
