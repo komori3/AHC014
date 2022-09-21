@@ -228,36 +228,24 @@ constexpr int sgn2dir[3][3] = {
     {3,2,1}
 };
 
-struct Point {
+struct Point { // TODO: to int8_t
     int x, y;
     Point(int x = 0, int y = 0) : x(x), y(y) {}
     Point next(int dir) const { return { x + dx8[dir], y + dy8[dir] }; }
     Point next(int dir, int distance) const { return { x + dx8[dir] * distance, y + dy8[dir] * distance }; }
     inline bool operator==(const Point& rhs) const { return x == rhs.x && y == rhs.y; }
     inline bool operator!=(const Point& rhs) const { return !(*this == rhs); }
-    inline bool operator<(const Point& rhs) const {
-        return y == rhs.y ? x < rhs.x : y < rhs.y;
-    }
-    string stringify() const {
-        return "[" + std::to_string(x) + ", " + std::to_string(y) + "]";
-    }
+    inline bool operator<(const Point& rhs) const { return y == rhs.y ? x < rhs.x : y < rhs.y; }
+    string stringify() const { return "[" + std::to_string(x) + ", " + std::to_string(y) + "]"; }
 };
 std::istream& operator>>(std::istream& in, Point& p) {
     in >> p.x >> p.y;
     return in;
 }
 
-inline int weight(int x, int y, int N) {
-    int dx = x - N / 2, dy = y - N / 2;
-    return dx * dx + dy * dy + 1;
-}
-
-inline int weight(const Point& p, int N) {
-    return weight(p.x, p.y, N);
-}
-
 using Rect = array<Point, 4>;
 
+// 面積の小さい順に長方形を置いていくと頑張って 39M くらい
 inline int area(const Rect& rect) {
     if (rect[0].x == rect[1].x || rect[0].y == rect[1].y) {
         int d1 = abs(rect[0].x - rect[1].x) + abs(rect[0].y - rect[1].y);
@@ -269,7 +257,9 @@ inline int area(const Rect& rect) {
     return d1 * d2 / 2;
 }
 
-inline int perimeter(const Rect& rect) {
+// "長方形の描画によって塗られる線の長さが少ない方がよい"と考えると、
+// 面積より周長を評価に用いるほうが妥当 -> これで 42M くらい
+inline int perimeter(const Rect & rect) {
     if (rect[0].x == rect[1].x || rect[0].y == rect[1].y) {
         int d1 = abs(rect[0].x - rect[1].x) + abs(rect[0].y - rect[1].y);
         int d2 = abs(rect[0].x - rect[3].x) + abs(rect[0].y - rect[3].y);
@@ -280,14 +270,17 @@ inline int perimeter(const Rect& rect) {
     return d1 + d2;
 }
 
+// 1-indexed
 struct Input;
 using InputPtr = std::shared_ptr<Input>;
 struct Input {
-    // 1-indexed
-    int N;
-    vector<Point> ps;
-    int S, Q;
-    vector<vector<int>> ws;
+
+    int N;                  // 盤面サイズ (31~61 の奇数)
+    vector<Point> ps;       // 印の初期配置
+    int S;                  // 盤面全体の重みの総和
+    int Q;                  // 印の初期配置の重みの総和
+    vector<vector<int>> ws; // 重みをメモした二次元配列
+
     Input(std::istream& in) {
         int M;
         in >> N >> M;
@@ -296,12 +289,22 @@ struct Input {
         S = Q = 0;
         ws.resize(N + 2, vector<int>(N + 2, -1));
         for (int y = 0; y < N; y++) for (int x = 0; x < N; x++) {
-            ws[y + 1][x + 1] = weight(x, y, N);
+            ws[y + 1][x + 1] = weight(x, y);
             S += ws[y + 1][x + 1];
         }
         for (const auto& [x, y] : ps) Q += ws[y + 1][x + 1];
         for (auto& [x, y] : ps) x++, y++;
     }
+
+    inline int weight(int x, int y) const {
+        int dx = x - N / 2, dy = y - N / 2;
+        return dx * dx + dy * dy + 1;
+    }
+
+    inline int weight(const Point& p) const {
+        return weight(p.x, p.y);
+    }
+
 };
 
 int debug_count = 0;
@@ -313,8 +316,11 @@ struct State {
     InputPtr input;
     int N;
 
-    vector<vector<bool>> has_point; // 外周は印が付いているとする TODO: uint64_t?
-    array<array<array<Point, 64>, 64>, 8> next_point; // (x,y) から d 方向に進んで初めて印に衝突する点
+    // 外周は印が付いているとする TODO: uint64_t?
+    vector<vector<bool>> has_point; 
+
+    // (x,y) から d 方向に進んで初めて印に衝突する印
+    array<array<array<Point, 64>, 64>, 8> next_point;
 
     // 0: left to right
     // 1: top-left to bottom-right
@@ -322,21 +328,31 @@ struct State {
     // 3: top-right to bottom-left
     array<array<uint64_t, 128>, 4> used_bit;
 
-    vector<std::pair<int, Rect>> cands; // (dir, rect)
+    // 作れる長方形の候補
+    // 便宜上 pair の first に p0->p1 の方向情報も入れている
+    // p0->p1->p2->p3 は時計回りで統一する
+    vector<std::pair<int, Rect>> cands;
+
+    // 現時点での重みの総和
     int weight_sum;
 
+    // ビームサーチ等することを考慮して、追加した長方形の情報はメンバで持たないようにしている
+
     State(InputPtr input) : input(input), N(input->N) {
+        // 外周は true
         has_point.resize(N + 2, vector<bool>(N + 2, true));
-        for (int y = 1; y <= N; y++) for (int x = 1; x <= N; x++) has_point[y][x] = false;
-        //used.resize(N + 2, vector<array<bool, 8>>(N + 2));
-        std::memset(used_bit.data(), 0, sizeof(uint64_t) * 4 * 128);
-        weight_sum = input->Q;
+        for (int y = 1; y <= N; y++) {
+            for (int x = 1; x <= N; x++) {
+                has_point[y][x] = false;
+            }
+        }
         for (const auto& [x, y] : input->ps) {
             has_point[y][x] = true;
         }
-        //for (int d = 0; d < 8; d++) {
-        //    next_point[d].resize(N + 2, vector<Point>(N + 2));
-        //}
+
+        std::memset(used_bit.data(), 0, sizeof(uint64_t) * 4 * 128);
+
+        // 初期化だしナイーブに計算している
         for (int sy = 1; sy <= N; sy++) {
             for (int sx = 1; sx <= N; sx++) {
                 for (int d = 0; d < 8; d++) {
@@ -346,6 +362,8 @@ struct State {
                 }
             }
         }
+
+
         for (int y = 1; y <= input->N; y++) {
             for (int x = 1; x <= input->N; x++) {
                 if (has_point[y][x]) continue;
@@ -357,8 +375,11 @@ struct State {
                 }
             }
         }
+
+        weight_sum = input->Q;
     }
 
+    // ナイーブに置ける場所を列挙する　デバッグ用
     vector<std::pair<int, Rect>> enum_cands_naive() const {
         vector<std::pair<int, Rect>> cands;
         for (int y = 1; y <= input->N; y++) {
@@ -375,6 +396,7 @@ struct State {
         return cands;
     }
 
+    // 正規化？した得点の計算
     int eval() const {
         return (int)round(1e6 * (input->N * input->N) / input->ps.size() * weight_sum / input->S);
     }
@@ -387,6 +409,7 @@ struct State {
         return is_inside(p.x, p.y);
     }
 
+    // p0 から dir 方向に長さ dist の線を描画する
     void draw_line(Point p0, int dir, int dist) {
         Point p1 = p0.next(dir, dist);
         if (dir >= 4) {
@@ -398,32 +421,37 @@ struct State {
             uint64_t mask = ((1ULL << p1.x) - 1) ^ ((1ULL << p0.x) - 1);
             used_bit[0][p0.y] |= mask;
         }
+        else if (dir == 1) {
+            // top-left to bottom-right
+            // 6543210
+            // 7
+            // 8 0000000
+            // 9 0111111
+            // a 0122222
+            // b 0123333
+            // c 0123444
+            //   0123455
+            //   0123456
+            int r = N + 1 - p0.x + p0.y, c = std::min(p0.x, p0.y);
+            uint64_t mask = ((1ULL << (c + dist)) - 1) ^ ((1ULL << c) - 1);
+            used_bit[1][r] |= mask;
+        }
         else if (dir == 2) {
             // top to bottom
             uint64_t mask = ((1ULL << p1.y) - 1) ^ ((1ULL << p0.y) - 1);
             used_bit[2][p0.x] |= mask;
         }
-        else if (dir == 1) {
-            // top-left to bottom-right
-            // 0000000
-            // 0111111
-            // 0122222
-            // 0123333
-            // 0123444
-            // 0123455
-            // 0123456
-            int r = N + 1 - p0.x + p0.y, c = std::min(p0.x, p0.y);
-            uint64_t mask = ((1ULL << (c + dist)) - 1) ^ ((1ULL << c) - 1);
-            used_bit[1][r] |= mask;
-        }
         else {
             // top-right to bottom-left
-            // 0000000
-            // 1111110
-            // 2222210
-            // 3333210
-            // 4443210
-            // 5543210
+            // 
+            //   0123456
+            //         7
+            // 0000000 8
+            // 1111110 9
+            // 2222210 a
+            // 3333210 b
+            // 4443210 c
+            // 5543210 
             // 6543210
             int r = p0.x + p0.y, c = std::min(N + 1 - p0.x, p0.y);
             uint64_t mask = ((1ULL << (c + dist)) - 1) ^ ((1ULL << c) - 1);
@@ -431,6 +459,19 @@ struct State {
         }
     }
 
+    // 長方形の描画
+    void draw_rect(const Rect& rect) {
+        for (int i = 0; i < 4; i++) {
+            auto [x, y] = rect[i];
+            auto [tx, ty] = rect[(i + 1) % 4];
+            int dx = x < tx ? 1 : (x > tx ? -1 : 0);
+            int dy = y < ty ? 1 : (y > ty ? -1 : 0);
+            int dir = sgn2dir[dy + 1][dx + 1];
+            draw_line(rect[i], dir, std::max(abs(x - tx), abs(y - ty)));
+        }
+    }
+
+    // p0 から dir 方向に長さ dist の線を考えたときに、既に塗られている区間が存在するか？
     bool is_overlapped(Point p0, int dir, int dist) const {
         Point p1 = p0.next(dir, dist);
         if (dir >= 4) {
@@ -442,16 +483,16 @@ struct State {
             uint64_t mask = ((1ULL << p1.x) - 1) ^ ((1ULL << p0.x) - 1);
             return used_bit[0][p0.y] & mask;
         }
-        else if (dir == 2) {
-            // top to bottom
-            uint64_t mask = ((1ULL << p1.y) - 1) ^ ((1ULL << p0.y) - 1);
-            return used_bit[2][p0.x] & mask;
-        }
         else if (dir == 1) {
             // top-left to bottom-right
             int r = N + 1 - p0.x + p0.y, c = std::min(p0.x, p0.y);
             uint64_t mask = ((1ULL << (c + dist)) - 1) ^ ((1ULL << c) - 1);
             return used_bit[1][r] & mask;
+        }
+        else if (dir == 2) {
+            // top to bottom
+            uint64_t mask = ((1ULL << p1.y) - 1) ^ ((1ULL << p0.y) - 1);
+            return used_bit[2][p0.x] & mask;
         }
         // top-right to bottom-left
         int r = p0.x + p0.y, c = std::min(N + 1 - p0.x, p0.y);
@@ -459,8 +500,8 @@ struct State {
         return used_bit[3][r] & mask;
     }
 
+    // 他の長方形との共通部分が存在するなら true
     bool is_overlapped(const Rect& rect) const {
-        // 他の長方形との共通部分が存在しないなら true
         for (int i = 0; i < 4; i++) {
             auto [x, y] = rect[i];
             auto [tx, ty] = rect[(i + 1) & 3];
@@ -475,7 +516,7 @@ struct State {
     std::pair<bool, Rect> calc_rect(const Point& p0, int dir0) const {
         assert(!has_point[p0.y][p0.x]);
         int dir1 = (dir0 + 2) & 7;
-        // p0 から dir0, dir1 方向に進んで初めて衝突する点を p1, p3 とする
+        // p0 から dir0, dir1 方向に進んで初めて衝突する印を p1, p3 とする
         // p1 から dir1 方向に伸ばした半直線と p3 から dir0 方向に伸ばした半直線の交点を p2 とする
 
         // 1. p1, p3 は印が付いていて、外周ではない
@@ -492,12 +533,12 @@ struct State {
 
         // 3. 線分 p1-p2, p3-p2 (境界含まない) 上に印は存在してはいけない
         {
-            // p1 から p2 方向に進んで初めてぶつかる点は p2 でなければならない
+            // p1 から p2 方向に進んで初めてぶつかる印は p2 でなければならない
             auto [x, y] = p1.next(dir1);
             if (next_point[dir1][y][x] != p2) return { 0, {} };
         }
         {
-            // p3 から p2 方向に進んで初めてぶつかる点は p2 でなければならない
+            // p3 から p2 方向に進んで初めてぶつかる印は p2 でなければならない
             auto [x, y] = p3.next(dir0);
             if (next_point[dir0][y][x] != p2) return { 0, {} };
         }
@@ -510,7 +551,6 @@ struct State {
     }
 
     std::pair<bool, Rect> check_p1(const Point& p1, int d) const {
-        // 構成可能なら p0 の座標を返す
         int nd = (d + 2) & 7;
         Point p2;
         {
@@ -600,8 +640,8 @@ struct State {
         return { true, {p0, p1, p2, p3} };
     }
 
+    // p に印を追加したことで構成できるようになった長方形を調べる
     void add_cands(const Point& p) {
-        // p に印を追加したことで構成できるようになった長方形を調べる
         for (int d = 0; d < 8; d++) {
             bool ok;
             Rect rect;
@@ -614,8 +654,8 @@ struct State {
         }
     }
 
+    // invalid になった長方形を候補から除外する
     void remove_cands() {
-        // invalid になった長方形を弾く
         int new_size = 0;
         for (int i = 0; i < (int)cands.size(); i++) {
             const auto& [d, rect] = cands[i];
@@ -625,10 +665,13 @@ struct State {
         cands.erase(cands.begin() + new_size, cands.end());
     }
 
+    // 印を追加する
+    // weight_sum, next_point の更新も行う
     void add_point(const Point& p) {
         auto [x, y] = p;
         assert(!has_point[y][x]);
         has_point[y][x] = true;
+        weight_sum += input->ws[p.y][p.x];
         for (int d = 0; d < 8; d++) {
             next_point[d][y][x] = { x, y };
             int rd = d ^ 4;
@@ -643,45 +686,12 @@ struct State {
 
     void apply_move(const Rect& rect) {
         add_point(rect[0]);
-        weight_sum += input->ws[rect[0].y][rect[0].x];
-        for (int i = 0; i < 4; i++) {
-            auto [x, y] = rect[i];
-            auto [tx, ty] = rect[(i + 1) % 4];
-            int dx = x < tx ? 1 : (x > tx ? -1 : 0);
-            int dy = y < ty ? 1 : (y > ty ? -1 : 0);
-            int dir = sgn2dir[dy + 1][dx + 1];
-            draw_line(rect[i], dir, std::max(abs(x - tx), abs(y - ty)));
-        }
+        draw_rect(rect);
         remove_cands();
         add_cands(rect[0]);
     }
 
-    // ある印を付けた際の候補点の増減
-    int calc_move_score(const Rect& rect) const {
-        State state(*this);
-        int prev_cands = state.cands.size();
-        state.apply_move(rect);
-        int now_cands = state.cands.size();
-        return now_cands - prev_cands;
-    }
-
-    vector<Rect> solve_greedy() {
-        vector<Rect> ans;
-        while (!cands.empty()) {
-            Rect best_rect;
-            int best_diff = INT_MIN;
-            for (const auto& [_, rect] : cands) {
-                int diff = calc_move_score(rect);
-                if (chmax(best_diff, diff)) {
-                    best_rect = rect;
-                }
-            }
-            apply_move(best_rect);
-            ans.push_back(best_rect);
-        }
-        return ans;
-    }
-
+    // pred に従い次に選択すべき長方形を候補から貪欲に選択する
     template<typename F>
     std::pair<bool, Rect> choose_greedy(const F& pred) const {
         if (cands.empty()) return { false, Rect() };
@@ -694,6 +704,8 @@ struct State {
 
 };
 
+// スコア計算
+// validator を端折っている…
 std::tuple<int, string, State> compute_score(InputPtr input, const vector<Rect>& out) {
     State state(input);
     for (int t = 0; t < (int)out.size(); t++) {
@@ -717,10 +729,17 @@ std::tuple<int, string, State> compute_score(InputPtr input, const vector<Rect>&
     return { score, "", state };
 }
 
+// 出力用構造体
 struct Output {
+
     vector<Rect> rects;
+
+    // 以下に統計情報を追加してマルチテストケース実行時にサマリとして出力できるようにしている
+
     double elapsed_ms;
+
     Output(const vector<Rect>& rects, double elapsed_ms = -1.0) : rects(rects), elapsed_ms(elapsed_ms) {}
+
     string stringify() const {
         string ans;
         ans += format("%lld\n", rects.size());
@@ -744,13 +763,17 @@ Output solve(InputPtr input) {
     Xorshift rnd;
     State init_state(input); 
 
+    // 時間いっぱい回して一番よかったものを採用
     int outer_loop = 0;
     constexpr int timelimit = 4900;
     while (timer.elapsed_ms() < timelimit) {
         if (timer.elapsed_ms() < timelimit) {
             auto state(init_state);
+            // 貪欲のタイブレークとして randomness を加えている
             auto f = [&input, &rnd](const Rect& lhs, const Rect& rhs) {
-                return std::make_pair(perimeter(lhs), rnd.next_int()) < std::make_pair(perimeter(rhs), rnd.next_int());
+                return 
+                    std::make_pair(perimeter(lhs), rnd.next_int())
+                    < std::make_pair(perimeter(rhs), rnd.next_int());
             };
             vector<Rect> rects;
             while (true) {
@@ -771,6 +794,7 @@ Output solve(InputPtr input) {
 }
 
 #ifdef _MSC_VER
+// マルチテストケース実行
 void batch_test(int seed_begin = 0, int num_seed = 100, int step = 1) {
 
     constexpr int batch_size = 8;
@@ -778,7 +802,7 @@ void batch_test(int seed_begin = 0, int num_seed = 100, int step = 1) {
     int seed_end = seed_begin + num_seed;
 
     vector<int> scores(num_seed);
-#if 1
+
     concurrency::critical_section mtx;
     for (int batch_begin = seed_begin; batch_begin < seed_end; batch_begin += block_size) {
         int batch_end = std::min(batch_begin + block_size, seed_end);
@@ -801,22 +825,6 @@ void batch_test(int seed_begin = 0, int num_seed = 100, int step = 1) {
             }
             });
     }
-#else
-    for (int seed = seed_begin; seed < seed_begin + num_seed; seed++) {
-        std::ifstream ifs(format("tools/in/%04d.txt", seed));
-        std::istream& in = ifs;
-        std::ofstream ofs(format("tools/out/%04d.txt", seed));
-        std::ostream& out = ofs;
-
-        auto input = std::make_shared<Input>(in);
-        Solver solver(input);
-        auto ret = solver.solve();
-        print_answer(out, ret);
-
-        scores[seed] = calc_score(input, ret);
-        cerr << seed << ": " << scores[seed] << ", " << solver.timer.elapsed_ms() << '\n';
-    }
-#endif
 
     dump(std::accumulate(scores.begin(), scores.end(), 0));
 }
@@ -852,6 +860,7 @@ void test() {
 21 17 18 20 15 17 18 14
 11 14 10 13 11 12 12 13
 )";
+    
     vector<Rect> output;
     {
         std::istringstream iss(output_raw);
