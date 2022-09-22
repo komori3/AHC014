@@ -316,8 +316,6 @@ struct Input {
 
 };
 
-int debug_count = 0;
-
 struct State;
 using StatePtr = std::shared_ptr<State>;
 struct State {
@@ -344,6 +342,7 @@ struct State {
 
     // 現時点での重みの総和
     int weight_sum;
+    int num_cands_perimeter2;
 
     // ビームサーチ等することを考慮して、追加した長方形の情報はメンバで持たないようにする
 
@@ -372,7 +371,7 @@ struct State {
             }
         }
 
-
+        num_cands_perimeter2 = 0;
         for (int y = 1; y <= input->N; y++) {
             for (int x = 1; x <= input->N; x++) {
                 if (has_point[y][x]) continue;
@@ -381,11 +380,13 @@ struct State {
                     auto [ok, rect] = calc_rect(p0, dir);
                     if (!ok) continue;
                     cands.emplace_back(dir, rect);
+                    num_cands_perimeter2 += perimeter(rect) == 2;
                 }
             }
         }
 
         weight_sum = input->Q;
+
     }
 
     // ナイーブに置ける場所を列挙する　デバッグ用
@@ -655,11 +656,20 @@ struct State {
             bool ok;
             Rect rect;
             std::tie(ok, rect) = check_p1(p, d);
-            if (ok) cands.emplace_back(d, rect);
+            if (ok) {
+                cands.emplace_back(d, rect);
+                num_cands_perimeter2 += perimeter(rect) == 2;
+            }
             std::tie(ok, rect) = check_p2(p, d);
-            if (ok) cands.emplace_back(d, rect);
+            if (ok) {
+                cands.emplace_back(d, rect);
+                num_cands_perimeter2 += perimeter(rect) == 2;
+            }
             std::tie(ok, rect) = check_p3(p, d);
-            if (ok) cands.emplace_back(d, rect);
+            if (ok) {
+                cands.emplace_back(d, rect);
+                num_cands_perimeter2 += perimeter(rect) == 2;
+            }
         }
     }
 
@@ -668,7 +678,10 @@ struct State {
         int new_size = 0;
         for (int i = 0; i < (int)cands.size(); i++) {
             const auto& [d, rect] = cands[i];
-            if (has_point[rect[0].y][rect[0].x] || !calc_rect(rect[0], d).first) continue;
+            if (has_point[rect[0].y][rect[0].x] || !calc_rect(rect[0], d).first) {
+                num_cands_perimeter2 -= perimeter(rect) == 2;
+                continue;
+            }
             cands[new_size++] = cands[i];
         }
         cands.erase(cands.begin() + new_size, cands.end());
@@ -1005,8 +1018,10 @@ struct Output {
 
     int score;
     double elapsed_ms;
+    int max_cands;
 
-    Output(const vector<Rect>& rects, int score, double elapsed_ms = -1.0) : rects(rects), score(score), elapsed_ms(elapsed_ms) {}
+    Output(const vector<Rect>& rects, int score, int max_cands, double elapsed_ms = -1.0)
+        : rects(rects), score(score), elapsed_ms(elapsed_ms), max_cands(max_cands) {}
 
     string stringify() const {
         string ans;
@@ -1031,6 +1046,8 @@ Output solve(InputPtr input) {
     Xorshift rnd;
     State init_state(input);
 
+    int max_cands = init_state.cands.size();
+
     // 時間いっぱい回して一番よかったものを採用
     int outer_loop = 0;
     constexpr int timelimit = 4900;
@@ -1049,6 +1066,7 @@ Output solve(InputPtr input) {
                 if (!ok) break;
                 rects.push_back(rect);
                 state.apply_move(rect);
+                chmax(max_cands, (int)state.cands.size());
                 if (timer.elapsed_ms() > timelimit) break;
             }
             if (chmax(best_score, state.eval())) {
@@ -1058,8 +1076,39 @@ Output solve(InputPtr input) {
         outer_loop++;
     }
 
-    //dump(outer_loop);
-    return { best_rects, best_score, timer.elapsed_ms() };
+    return { best_rects, best_score, max_cands, timer.elapsed_ms() };
+}
+
+Output solve2(InputPtr input) {
+
+    Timer timer;
+
+    Xorshift rnd;
+    State state(input);
+
+    vector<Rect> ans;
+    int score = state.eval();
+
+    int turn = 0;
+    while (!state.cands.empty()) {
+        turn++;
+        Rect best_rect;
+        pii best_eval = { INT_MAX, INT_MAX };
+        for (const auto& [_, rect] : state.cands) {
+            State next_state(state);
+            next_state.apply_move(rect);
+            pii eval = { perimeter(rect), -next_state.num_cands_perimeter2 };
+            if (chmin(best_eval, eval)) {
+                best_rect = rect;
+            }
+        }
+        state.apply_move(best_rect);
+        ans.push_back(best_rect);
+        score = state.eval();
+        //dump(turn, best_eval, score);
+    }
+
+    return { ans, score, -1, timer.elapsed_ms() };
 }
 
 #ifdef _MSC_VER
@@ -1084,12 +1133,12 @@ void batch_test(int seed_begin = 0, int num_seed = 100, int step = 1) {
             std::ostream& out = ofs;
 
             auto input = std::make_shared<Input>(in);
-            auto res = solve(input);
+            auto res = solve2(input);
             {
                 mtx.lock();
                 out << res;
                 scores[seed] = res.score;
-                cerr << format("seed=%d, score=%d, elapsed_ms=%f\n", seed, scores[seed], res.elapsed_ms);
+                cerr << format("seed=%d, score=%d, elapsed_ms=%f, max_cands=%d\n", seed, scores[seed], res.elapsed_ms, res.max_cands);
                 mtx.unlock();
             }
             });
@@ -1165,8 +1214,8 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
 #endif
 
 #ifdef _MSC_VER
-    std::ifstream ifs(R"(tools_win\in\0005.txt)");
-    std::ofstream ofs(R"(tools_win\out\0005.txt)");
+    std::ifstream ifs(R"(tools_win\in\0000.txt)");
+    std::ofstream ofs(R"(tools_win\out\0000.txt)");
     std::istream& in = ifs;
     std::ostream& out = ofs;
 #else
@@ -1179,18 +1228,17 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
 #else
     auto input = std::make_shared<Input>(in);
 
-#ifdef HAVE_OPENCV_HIGHGUI
-    if(false) {
-        auto msol = std::make_shared<NVis::ManualSolver>(input);
-        msol->vis();
-        exit(1);
-    }
-#endif
-
-    auto ans = solve(input);
+    auto ans = solve2(input);
     dump(ans.score);
     out << ans;
     dump(ans.elapsed_ms);
+
+#ifdef HAVE_OPENCV_HIGHGUI
+    if (true) {
+        auto msol = std::make_shared<NVis::ManualSolver>(input, ans.rects);
+        msol->vis();
+    }
+#endif
 #endif
 
     return 0;
