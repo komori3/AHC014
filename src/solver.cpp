@@ -4,6 +4,7 @@
 #include <random>
 #include <unordered_set>
 #include <array>
+#include <optional>
 #ifdef _MSC_VER
 #include <opencv2/core.hpp>
 #include <opencv2/core/utils/logger.hpp>
@@ -260,6 +261,7 @@ inline int area(const Rect& rect) {
 // "長方形の描画によって塗られる線の長さが少ない方がよい"と考えると、
 // 面積より周長を評価に用いるほうが妥当 -> これで 42M くらい
 inline int perimeter(const Rect & rect) {
+    // return value is halved
     if (rect[0].x == rect[1].x || rect[0].y == rect[1].y) {
         int d1 = abs(rect[0].x - rect[1].x) + abs(rect[0].y - rect[1].y);
         int d2 = abs(rect[0].x - rect[3].x) + abs(rect[0].y - rect[3].y);
@@ -268,6 +270,13 @@ inline int perimeter(const Rect & rect) {
     int d1 = abs(rect[0].x - rect[1].x);
     int d2 = abs(rect[0].x - rect[3].x);
     return d1 + d2;
+}
+
+std::ostream& operator<<(std::ostream& os, const Rect& r) {
+    os << format("Rect [p0=(%2d,%2d), p1=(%2d,%2d), p2=(%2d,%2d), p3=(%2d,%2d), half_perimeter=%d]",
+        r[0].x, r[0].y, r[1].x, r[1].y, r[2].x, r[2].y, r[3].x, r[3].y, perimeter(r)
+        );
+    return os;
 }
 
 // 1-indexed
@@ -336,7 +345,7 @@ struct State {
     // 現時点での重みの総和
     int weight_sum;
 
-    // ビームサーチ等することを考慮して、追加した長方形の情報はメンバで持たないようにしている
+    // ビームサーチ等することを考慮して、追加した長方形の情報はメンバで持たないようにする
 
     State(InputPtr input) : input(input), N(input->N) {
         // 外周は true
@@ -704,30 +713,288 @@ struct State {
 
 };
 
-// スコア計算
-// validator を端折っている…
-std::tuple<int, string, State> compute_score(InputPtr input, const vector<Rect>& out) {
-    State state(input);
-    for (int t = 0; t < (int)out.size(); t++) {
-        const auto& rect = out[t];
-        state.apply_move(out[t]);
+#ifdef HAVE_OPENCV_HIGHGUI
+namespace NVis {
+
+    cv::Scalar scalar(const string& hex) {
+        std::stringstream ss;
+        ss << std::hex << hex;
+        int rgb;
+        ss >> rgb;
+        return cv::Scalar(rgb % 256, rgb / 256 % 256, rgb / (256 * 256));
     }
-    int num = 0;
-    for (const auto& [x, y] : input->ps) {
-        num += input->ws[y][x];
+
+    double dist2_seg(double x, double y, double sx, double sy, double tx, double ty) {
+        double dx = tx - sx, dy = ty - sy, dx2 = dx * dx, dy2 = dy * dy, r2 = dx2 + dy2;
+        double tt = -(dx * (sx - x) + dy * (sy - y));
+        if (tt < 0) return (sx - x) * (sx - x) + (sy - y) * (sy - y);
+        if (tt > r2) return (tx - x) * (tx - x) + (ty - y) * (ty - y);
+        double f1 = dx * (sy - y) - dy * (sx - x);
+        return double(f1 * f1) / r2;
     }
-    for (const auto& rect : out) {
-        num += input->ws[rect[0].y][rect[0].x];
-    }
-    int den = 0;
-    for (int y = 1; y <= input->N; y++) {
-        for (int x = 1; x <= input->N; x++) {
-            den += input->ws[y][x];
+
+    double dist2_rect(double x, double y, const Rect& rect) {
+        double res = DBL_MAX;
+        for (int i = 0; i < 4; i++) {
+            auto [sx, sy] = rect[i];
+            auto [tx, ty] = rect[(i + 1) & 3];
+            chmin(res, dist2_seg(x, y, sx, sy, tx, ty));
         }
+        return res;
     }
-    int score = (int)round(1e6 * (input->N * input->N) / input->ps.size() * num / den);
-    return { score, "", state };
+
+    struct MouseParams;
+    using MouseParamsPtr = std::shared_ptr<MouseParams>;
+    struct MouseParams {
+        int pe, px, py, pf;
+        int e, x, y, f;
+        MouseParams() { e = x = y = f = pe = px = py = pf = INT_MAX; };
+        inline void load(int e_, int x_, int y_, int f_) {
+            pe = e; px = x; py = y; pf = f;
+            e = e_; x = x_; y = y_; f = f_;
+        }
+        inline bool clicked_left() const { return e == 1 && pe == 0; }
+        inline bool clicked_right() const { return e == 2 && pe == 0; }
+        inline bool released_left() const { return e == 4; }
+        inline bool released_right() const { return e == 5; }
+        inline bool drugging_left() const { return e == 0 && f == 1; }
+        inline bool drugging_right() const { return e == 0 && f == 2; }
+        inline std::pair<int, int> coord() const { return { x, y }; }
+        inline std::pair<int, int> displacement() const {
+            return { abs(x - px) > 10000 ? 0 : (x - px), abs(y - py) > 10000 ? 0 : (y - py) };
+        }
+        string stringify() const {
+            return format(
+                "MouseParams [(e,x,y,f)=(%d,%d,%d,%d), (pe,px,py,pf)=(%d,%d,%d,%d)]"
+                , e, x, y, f, pe, px, py, pf
+            );
+        }
+    };
+
+    struct ManualState;
+    using ManualStatePtr = std::shared_ptr<ManualState>;
+    struct ManualState {
+
+        int frame_id;
+        vector<StatePtr> states;
+        vector<Rect> rects;
+        std::optional<Rect> nearest_rect;
+
+        void remove_successor_states() {
+            states.erase(states.begin() + frame_id + 1, states.end());
+            rects.erase(rects.begin() + frame_id + 1, rects.end());
+
+        }
+
+    };
+
+    struct ManualSolver {
+
+        const string winname = "img";
+        const int board_size = 1000;
+        const int grid_size;
+
+        InputPtr input;
+        //StatePtr state;
+
+        cv::Mat_<cv::Vec3b> img;
+
+        MouseParamsPtr mp;
+        ManualStatePtr msp;
+
+        ManualSolver(InputPtr input)
+            : input(input), grid_size(board_size / (input->N + 2)) {
+            mp = std::make_shared<MouseParams>();
+            msp = std::make_shared<ManualState>();
+            msp->frame_id = 0;
+            msp->states.push_back(std::make_shared<State>(input));
+            Rect sentinel;
+            for (int i = 0; i < 4; i++) sentinel[i] = { -2, -2 };
+            msp->rects.push_back(sentinel);
+        }
+
+        ManualSolver(InputPtr input, const vector<Rect>& rects) 
+            : input(input), grid_size(board_size / (input->N + 2)) {
+            mp = std::make_shared<MouseParams>();
+            msp = std::make_shared<ManualState>();
+            msp->frame_id = 0;
+            auto state = State(input);
+            msp->states.push_back(std::make_shared<State>(state));
+            Rect sentinel;
+            for (int i = 0; i < 4; i++) sentinel[i] = { -2, -2 };
+            msp->rects.push_back(sentinel);
+            for (const auto& rect : rects) {
+                state.apply_move(rect);
+                msp->frame_id++;
+                msp->states.push_back(std::make_shared<State>(state));
+                msp->rects.push_back(rect);
+            }
+        }
+
+        inline cv::Point cvt(int x, int y) const {
+            return { x * grid_size, y * grid_size };
+        }
+
+        inline cv::Point cvt(const Point& p) const {
+            return cvt(p.x, p.y);
+        }
+
+        inline Point icvt(int x, int y) const {
+            return { x / grid_size, y / grid_size };
+        }
+
+        std::optional<Rect> calc_nearest_candidate_rect(double thresh = 100.0) const {
+            auto state = msp->states[msp->frame_id];
+            double min_dist = DBL_MAX;
+            Rect selected;
+            for (const auto& [_, rect] : state->cands) {
+                auto magnified = rect;
+                for (auto& p : magnified) p.x *= grid_size, p.y *= grid_size;
+                if (chmin(min_dist, dist2_rect(mp->x, mp->y, magnified))) {
+                    selected = rect;
+                }
+            }
+            if (min_dist == DBL_MAX || min_dist > thresh) return std::nullopt;
+            return selected;
+        }
+
+        cv::Mat_<cv::Vec3b> create_board_image() const {
+
+            auto state = msp->states[msp->frame_id];
+
+            cv::Mat_<cv::Vec3b> base_img(board_size, board_size, cv::Vec3b(255, 255, 255));
+            
+            for (int y = 1; y <= input->N; y++) {
+                for (int x = 1; x <= input->N; x++) {
+                    cv::circle(base_img, cvt(Point(x, y)), 3, cv::Scalar(150, 150, 150), cv::FILLED);
+                }
+            }
+
+            for (int i = 1; i <= msp->frame_id; i++) {
+                const auto& rect = msp->rects[i];
+                for (int i = 0; i < 4; i++) {
+                    auto [x1, y1] = rect[i];
+                    auto [x2, y2] = rect[(i + 1) & 3];
+                    cv::line(base_img, cvt(rect[i]), cvt(rect[(i + 1) & 3]), cv::Scalar(0, 0, 0), 2);
+                }
+            }
+
+            if (msp->nearest_rect) {
+                auto rect = msp->nearest_rect.value();
+                for (int i = 0; i < 4; i++) {
+                    auto [x1, y1] = rect[i];
+                    auto [x2, y2] = rect[(i + 1) & 3];
+                    cv::line(base_img, cvt(rect[i]), cvt(rect[(i + 1) & 3]), scalar("0000ff"), 2);
+                }
+                cv::circle(base_img, cvt(rect[0]), 6, scalar("0000ff"), cv::FILLED);
+            }
+
+            for (int y = 1; y <= input->N; y++) {
+                for (int x = 1; x <= input->N; x++) {
+                    if (state->has_point[y][x]) {
+                        cv::circle(base_img, cvt(Point(x, y)), 6, cv::Scalar(0, 0, 0), cv::FILLED);
+                    }
+                    if (msp->frame_id >= 1) {
+                        cv::circle(base_img, cvt(msp->rects[msp->frame_id][0]), 6, cv::Scalar(0, 0, 255), cv::FILLED);
+                    }
+                }
+            }
+
+            auto rect_img = base_img.clone();
+
+            for (const auto& [_, rect] : state->cands) {
+                for (int i = 0; i < 4; i++) {
+                    auto [x1, y1] = rect[i];
+                    auto [x2, y2] = rect[(i + 1) & 3];
+                    cv::line(rect_img, cvt(rect[i]), cvt(rect[(i + 1) & 3]), scalar("0000ff"), 2);
+                }
+            }
+
+            cv::Mat_<cv::Vec3b> img;
+            cv::addWeighted(base_img, 0.8, rect_img, 0.2, 0, img);
+
+            return img;
+        }
+
+        void vis() {
+
+            cv::namedWindow(winname, cv::WINDOW_AUTOSIZE);
+            img = create_board_image();
+            cv::imshow(winname, img);
+
+            cv::createTrackbar("frame id", winname, &msp->frame_id, msp->states.size() - 1, frame_callback, this);
+            cv::setTrackbarMin("frame id", winname, 0);
+
+            cv::setMouseCallback(winname, mouse_callback, this);
+
+            while (true) {
+                int c = cv::waitKey(15);
+                if (c == 27 /*ESC*/) break;
+                if (c == 8 /*backspace*/) {
+                    msp->frame_id = std::max(msp->frame_id - 1, 0);
+                    cv::setTrackbarPos("frame id", winname, msp->frame_id);
+                }
+                
+                img = create_board_image();
+                cv::imshow(winname, img);
+            }
+
+        }
+
+        void fit_frame_trackbar(bool move_newest = false) {
+            cv::setTrackbarMax("frame id", winname, msp->states.size() - 1);
+            if (move_newest) {
+                msp->frame_id = msp->states.size() - 1;
+                cv::setTrackbarPos("frame id", winname, msp->frame_id);
+            }
+        }
+
+        void exec_mouse_action() {
+            msp->nearest_rect = calc_nearest_candidate_rect();
+            if (auto clicked_left = mp->clicked_left()) {
+                if (msp->nearest_rect) {
+                    msp->remove_successor_states();
+                    auto state = *msp->states.back();
+                    auto rect = msp->nearest_rect.value();
+                    cerr << rect << '\n';
+                    state.apply_move(rect);
+                    msp->states.push_back(std::make_shared<State>(state));
+                    msp->rects.push_back(rect);
+                    fit_frame_trackbar(true);
+                    msp->nearest_rect = std::nullopt;
+                }
+            }
+        }
+
+        static void mouse_callback(int e, int x, int y, int f, void* param) {
+            auto vis = static_cast<ManualSolver*>(param);
+            vis->mp->load(e, x, y, f);
+            vis->exec_mouse_action();
+        }
+
+        static void frame_callback(int id, void* param) {
+            auto vis = static_cast<ManualSolver*>(param);
+            vis->msp->frame_id = id;
+            cerr << format(
+                "frame_id: %d, score: %d -> %d\n",
+                id,
+                id - 1 >= 0 ? vis->msp->states[id - 1]->eval() : 0,
+                vis->msp->states[id]->eval()
+            );
+        }
+
+    };
+
+
+    void solve_manual(InputPtr input) {
+
+        ManualSolver msol(input);
+        msol.vis();
+
+    }
+
 }
+#endif
 
 // 出力用構造体
 struct Output {
@@ -736,9 +1003,10 @@ struct Output {
 
     // 以下に統計情報を追加してマルチテストケース実行時にサマリとして出力できるようにしている
 
+    int score;
     double elapsed_ms;
 
-    Output(const vector<Rect>& rects, double elapsed_ms = -1.0) : rects(rects), elapsed_ms(elapsed_ms) {}
+    Output(const vector<Rect>& rects, int score, double elapsed_ms = -1.0) : rects(rects), score(score), elapsed_ms(elapsed_ms) {}
 
     string stringify() const {
         string ans;
@@ -761,7 +1029,7 @@ Output solve(InputPtr input) {
     int best_score = -1;
 
     Xorshift rnd;
-    State init_state(input); 
+    State init_state(input);
 
     // 時間いっぱい回して一番よかったものを採用
     int outer_loop = 0;
@@ -789,8 +1057,9 @@ Output solve(InputPtr input) {
         }
         outer_loop++;
     }
+
     //dump(outer_loop);
-    return { best_rects, timer.elapsed_ms() };
+    return { best_rects, best_score, timer.elapsed_ms() };
 }
 
 #ifdef _MSC_VER
@@ -819,7 +1088,7 @@ void batch_test(int seed_begin = 0, int num_seed = 100, int step = 1) {
             {
                 mtx.lock();
                 out << res;
-                scores[seed] = std::get<0>(compute_score(input, res.rects));
+                scores[seed] = res.score;
                 cerr << format("seed=%d, score=%d, elapsed_ms=%f\n", seed, scores[seed], res.elapsed_ms);
                 mtx.unlock();
             }
@@ -880,8 +1149,6 @@ void test() {
             state.apply_move(rect);
         }
         dump(state.eval());
-
-        dump(std::get<0>(compute_score(input, output)));
     }
 
     {
@@ -898,8 +1165,8 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
 #endif
 
 #ifdef _MSC_VER
-    std::ifstream ifs(R"(tools_win\in\0098.txt)");
-    std::ofstream ofs(R"(tools_win\out\0098.txt)");
+    std::ifstream ifs(R"(tools_win\in\0005.txt)");
+    std::ofstream ofs(R"(tools_win\out\0005.txt)");
     std::istream& in = ifs;
     std::ostream& out = ofs;
 #else
@@ -911,8 +1178,17 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     batch_test();
 #else
     auto input = std::make_shared<Input>(in);
+
+#ifdef HAVE_OPENCV_HIGHGUI
+    if(false) {
+        auto msol = std::make_shared<NVis::ManualSolver>(input);
+        msol->vis();
+        exit(1);
+    }
+#endif
+
     auto ans = solve(input);
-    dump(std::get<0>(compute_score(input, ans.rects)));
+    dump(ans.score);
     out << ans;
     dump(ans.elapsed_ms);
 #endif
