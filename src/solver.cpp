@@ -726,6 +726,34 @@ struct State {
 
 };
 
+// 出力用構造体
+struct Output {
+
+    vector<Rect> rects;
+
+    // 以下に統計情報を追加してマルチテストケース実行時にサマリとして出力できるようにしている
+
+    int score;
+    double elapsed_ms;
+    int max_cands;
+
+    Output(const vector<Rect>& rects, int score, int max_cands, double elapsed_ms = -1.0)
+        : rects(rects), score(score), elapsed_ms(elapsed_ms), max_cands(max_cands) {}
+
+    string stringify() const {
+        string ans;
+        ans += format("%lld\n", rects.size());
+        for (const auto& [p0, p1, p2, p3] : rects) {
+            ans += format(
+                "%d %d %d %d %d %d %d %d\n",
+                p0.x - 1, p0.y - 1, p1.x - 1, p1.y - 1, p2.x - 1, p2.y - 1, p3.x - 1, p3.y - 1
+            );
+        }
+        return ans;
+    }
+};
+
+
 #ifdef HAVE_OPENCV_HIGHGUI
 namespace NVis {
 
@@ -947,6 +975,17 @@ namespace NVis {
                     msp->frame_id = std::max(msp->frame_id - 1, 0);
                     cv::setTrackbarPos("frame id", winname, msp->frame_id);
                 }
+                if (c == 's' /*save*/) {
+                    vector<Rect> ans;
+                    for (int i = 1; i <= msp->frame_id; i++) {
+                        ans.push_back(msp->rects[i]);
+                    }
+                    Output output(ans, -1, -1, -1.0);
+                    std::ofstream ofs("output.txt");
+                    ofs << output;
+                    cerr << "saved!" << endl;
+                    ofs.close();
+                }
                 
                 img = create_board_image();
                 cv::imshow(winname, img);
@@ -1008,33 +1047,6 @@ namespace NVis {
 
 }
 #endif
-
-// 出力用構造体
-struct Output {
-
-    vector<Rect> rects;
-
-    // 以下に統計情報を追加してマルチテストケース実行時にサマリとして出力できるようにしている
-
-    int score;
-    double elapsed_ms;
-    int max_cands;
-
-    Output(const vector<Rect>& rects, int score, int max_cands, double elapsed_ms = -1.0)
-        : rects(rects), score(score), elapsed_ms(elapsed_ms), max_cands(max_cands) {}
-
-    string stringify() const {
-        string ans;
-        ans += format("%lld\n", rects.size());
-        for (const auto& [p0, p1, p2, p3] : rects) {
-            ans += format(
-                "%d %d %d %d %d %d %d %d\n",
-                p0.x - 1, p0.y - 1, p1.x - 1, p1.y - 1, p2.x - 1, p2.y - 1, p3.x - 1, p3.y - 1
-            );
-        }
-        return ans;
-    }
-};
 
 Output solve(InputPtr input) {
 
@@ -1133,7 +1145,7 @@ void batch_test(int seed_begin = 0, int num_seed = 100, int step = 1) {
             std::ostream& out = ofs;
 
             auto input = std::make_shared<Input>(in);
-            auto res = solve2(input);
+            auto res = solve(input);
             {
                 mtx.lock();
                 out << res;
@@ -1228,7 +1240,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
 #else
     auto input = std::make_shared<Input>(in);
 
-    auto ans = solve2(input);
+    auto ans = solve(input);
     dump(ans.score);
     out << ans;
     dump(ans.elapsed_ms);
