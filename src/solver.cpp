@@ -316,6 +316,33 @@ struct Input {
 
 };
 
+// 出力用構造体
+struct Output {
+
+    vector<Rect> rects;
+
+    // 以下に統計情報を追加してマルチテストケース実行時にサマリとして出力できるようにしている
+
+    int score;
+    double elapsed_ms;
+    int max_cands;
+
+    Output(const vector<Rect>& rects, int score, int max_cands, double elapsed_ms = -1.0)
+        : rects(rects), score(score), elapsed_ms(elapsed_ms), max_cands(max_cands) {}
+
+    string stringify() const {
+        string ans;
+        ans += format("%lld\n", rects.size());
+        for (const auto& [p0, p1, p2, p3] : rects) {
+            ans += format(
+                "%d %d %d %d %d %d %d %d\n",
+                p0.x - 1, p0.y - 1, p1.x - 1, p1.y - 1, p2.x - 1, p2.y - 1, p3.x - 1, p3.y - 1
+            );
+        }
+        return ans;
+    }
+};
+
 struct State;
 using StatePtr = std::shared_ptr<State>;
 struct State {
@@ -324,10 +351,14 @@ struct State {
     int N;
 
     // 外周は印が付いているとする TODO: uint64_t?
-    vector<vector<bool>> has_point; 
+    array<array<bool, 64>, 64> has_point;
 
     // (x,y) から d 方向に進んで初めて印に衝突する印
     array<array<array<Point, 64>, 64>, 8> next_point;
+
+    array<array<array<bool, 8>, 64>, 64> used;
+    array<array<bool, 64>, 64> used_axes;
+    array<array<bool, 64>, 64> used_diag;
 
     // 0: left to right
     // 1: top-left to bottom-right
@@ -342,13 +373,13 @@ struct State {
 
     // 現時点での重みの総和
     int weight_sum;
-    int num_cands_perimeter2;
+    int penalty;
 
     // ビームサーチ等することを考慮して、追加した長方形の情報はメンバで持たないようにする
 
     State(InputPtr input) : input(input), N(input->N) {
         // 外周は true
-        has_point.resize(N + 2, vector<bool>(N + 2, true));
+        for (int y = 0; y < 64; y++) for (int x = 0; x < 64; x++) has_point[y][x] = true;
         for (int y = 1; y <= N; y++) {
             for (int x = 1; x <= N; x++) {
                 has_point[y][x] = false;
@@ -357,6 +388,10 @@ struct State {
         for (const auto& [x, y] : input->ps) {
             has_point[y][x] = true;
         }
+
+        memset(used.data(), 0, sizeof(bool) * 64 * 64 * 8);
+        memset(used_axes.data(), 0, sizeof(bool) * 64 * 64);
+        memset(used_diag.data(), 0, sizeof(bool) * 64 * 64);
 
         std::memset(used_bit.data(), 0, sizeof(uint64_t) * 4 * 128);
 
@@ -371,21 +406,20 @@ struct State {
             }
         }
 
-        num_cands_perimeter2 = 0;
         for (int y = 1; y <= input->N; y++) {
             for (int x = 1; x <= input->N; x++) {
                 if (has_point[y][x]) continue;
                 Point p0(x, y);
                 for (int dir = 0; dir < 8; dir++) {
-                    auto [ok, rect] = calc_rect(p0, dir);
+                    auto [ok, rect] = check_p0(p0, dir);
                     if (!ok) continue;
                     cands.emplace_back(dir, rect);
-                    num_cands_perimeter2 += perimeter(rect) == 2;
                 }
             }
         }
 
         weight_sum = input->Q;
+        penalty = 0;
 
     }
 
@@ -397,7 +431,7 @@ struct State {
                 if (has_point[y][x]) continue;
                 Point p0(x, y);
                 for (int dir = 0; dir < 8; dir++) {
-                    auto [ok, rect] = calc_rect(p0, dir);
+                    auto [ok, rect] = check_p0(p0, dir);
                     if (!ok) continue;
                     cands.emplace_back(dir, rect);
                 }
@@ -478,7 +512,51 @@ struct State {
             int dy = y < ty ? 1 : (y > ty ? -1 : 0);
             int dir = sgn2dir[dy + 1][dx + 1];
             draw_line(rect[i], dir, std::max(abs(x - tx), abs(y - ty)));
+
+            auto& u = (dir & 1) ? used_diag : used_axes;
+            tx -= dx; ty -= dy;
+            while (x != tx || y != ty) {
+                used[y][x][dir] = true;
+                x += dx;
+                y += dy;
+                used[y][x][dir ^ 4] = true;
+                u[y][x] = true;
+            }
+            used[y][x][dir] = true;
+            x += dx;
+            y += dy;
+            used[y][x][dir ^ 4] = true;
         }
+    }
+
+    int calc_penalty(const Rect& rect) const {
+        // 印の存在しない点について
+        // 1. 縦横に直線が走る -> 小penalty
+        // 2. 斜めに直線が走る -> 小penalty
+        // 3. 1 と 2 両方(その点は今後 p0 として使えない) -> 大penalty
+        int penalty = 0;
+        for (int i = 0; i < 4; i++) {
+            auto [x, y] = rect[i];
+            auto [tx, ty] = rect[(i + 1) % 4];
+            int dx = x < tx ? 1 : (x > tx ? -1 : 0);
+            int dy = y < ty ? 1 : (y > ty ? -1 : 0);
+            int dir = sgn2dir[dy + 1][dx + 1];
+
+            auto& u1 = (dir & 1) ? used_diag : used_axes;
+            auto& u2 = (dir & 1) ? used_axes : used_diag;
+            tx -= dx; ty -= dy;
+            while (x != tx || y != ty) {
+                x += dx;
+                y += dy;
+                // bool b1 = u1[y][x], b2 = u2[y][x];
+                // b1 & b2: 0
+                // b1 & !b2: 0
+                // !b1 & !b2: 1
+                // !b1 & b2: 9
+                penalty += (u1[y][x] ? 0 : (u2[y][x] ? 9 : 1));
+            }
+        }
+        return penalty;
     }
 
     // p0 から dir 方向に長さ dist の線を考えたときに、既に塗られている区間が存在するか？
@@ -523,17 +601,33 @@ struct State {
         return false;
     }
 
-    std::pair<bool, Rect> calc_rect(const Point& p0, int dir0) const {
+    bool is_overlapped2(const Rect& rect) const {
+        // 他の長方形との共通部分が存在しないなら true
+        for (int i = 0; i < 4; i++) {
+            auto [x, y] = rect[i];
+            auto [tx, ty] = rect[(i + 1) & 3];
+            int dx = x < tx ? 1 : (x > tx ? -1 : 0);
+            int dy = y < ty ? 1 : (y > ty ? -1 : 0);
+            int dir = sgn2dir[dy + 1][dx + 1];
+            while (x != tx || y != ty) {
+                if (used[y][x][dir]) return true;
+                x += dx; y += dy;
+            }
+        }
+        return false;
+    }
+
+    std::pair<bool, Rect> check_p0(const Point& p0, int d) const {
         assert(!has_point[p0.y][p0.x]);
-        int dir1 = (dir0 + 2) & 7;
+        int nd = (d + 2) & 7;
         // p0 から dir0, dir1 方向に進んで初めて衝突する印を p1, p3 とする
         // p1 から dir1 方向に伸ばした半直線と p3 から dir0 方向に伸ばした半直線の交点を p2 とする
 
         // 1. p1, p3 は印が付いていて、外周ではない
-        Point p1 = next_point[dir0][p0.y][p0.x];
+        Point p1 = next_point[d][p0.y][p0.x];
         if (!is_inside(p1)) return { 0, {} };
         assert(has_point[p1.y][p1.x]);
-        Point p3 = next_point[dir1][p0.y][p0.x];
+        Point p3 = next_point[nd][p0.y][p0.x];
         if (!is_inside(p3)) return { 0, {} };
         assert(has_point[p3.y][p3.x]);
 
@@ -544,13 +638,13 @@ struct State {
         // 3. 線分 p1-p2, p3-p2 (境界含まない) 上に印は存在してはいけない
         {
             // p1 から p2 方向に進んで初めてぶつかる印は p2 でなければならない
-            auto [x, y] = p1.next(dir1);
-            if (next_point[dir1][y][x] != p2) return { 0, {} };
+            auto [x, y] = p1.next(nd);
+            if (next_point[nd][y][x] != p2) return { 0, {} };
         }
         {
             // p3 から p2 方向に進んで初めてぶつかる印は p2 でなければならない
-            auto [x, y] = p3.next(dir0);
-            if (next_point[dir0][y][x] != p2) return { 0, {} };
+            auto [x, y] = p3.next(d);
+            if (next_point[d][y][x] != p2) return { 0, {} };
         }
 
         // 4. 他の長方形との共通部分は存在してはいけない
@@ -658,17 +752,14 @@ struct State {
             std::tie(ok, rect) = check_p1(p, d);
             if (ok) {
                 cands.emplace_back(d, rect);
-                num_cands_perimeter2 += perimeter(rect) == 2;
             }
             std::tie(ok, rect) = check_p2(p, d);
             if (ok) {
                 cands.emplace_back(d, rect);
-                num_cands_perimeter2 += perimeter(rect) == 2;
             }
             std::tie(ok, rect) = check_p3(p, d);
             if (ok) {
                 cands.emplace_back(d, rect);
-                num_cands_perimeter2 += perimeter(rect) == 2;
             }
         }
     }
@@ -678,8 +769,7 @@ struct State {
         int new_size = 0;
         for (int i = 0; i < (int)cands.size(); i++) {
             const auto& [d, rect] = cands[i];
-            if (has_point[rect[0].y][rect[0].x] || !calc_rect(rect[0], d).first) {
-                num_cands_perimeter2 -= perimeter(rect) == 2;
+            if (has_point[rect[0].y][rect[0].x] || !check_p0(rect[0], d).first) {
                 continue;
             }
             cands[new_size++] = cands[i];
@@ -707,6 +797,8 @@ struct State {
     }
 
     void apply_move(const Rect& rect) {
+        //penalty += perimeter(rect);
+        penalty += calc_penalty(rect);
         add_point(rect[0]);
         draw_rect(rect);
         remove_cands();
@@ -724,329 +816,29 @@ struct State {
         return { true, best };
     }
 
-};
+    Output solve_greedy(Xorshift& rnd) {
 
-// 出力用構造体
-struct Output {
-
-    vector<Rect> rects;
-
-    // 以下に統計情報を追加してマルチテストケース実行時にサマリとして出力できるようにしている
-
-    int score;
-    double elapsed_ms;
-    int max_cands;
-
-    Output(const vector<Rect>& rects, int score, int max_cands, double elapsed_ms = -1.0)
-        : rects(rects), score(score), elapsed_ms(elapsed_ms), max_cands(max_cands) {}
-
-    string stringify() const {
-        string ans;
-        ans += format("%lld\n", rects.size());
-        for (const auto& [p0, p1, p2, p3] : rects) {
-            ans += format(
-                "%d %d %d %d %d %d %d %d\n",
-                p0.x - 1, p0.y - 1, p1.x - 1, p1.y - 1, p2.x - 1, p2.y - 1, p3.x - 1, p3.y - 1
-            );
-        }
-        return ans;
-    }
-};
-
-
-#ifdef HAVE_OPENCV_HIGHGUI
-namespace NVis {
-
-    cv::Scalar scalar(const string& hex) {
-        std::stringstream ss;
-        ss << std::hex << hex;
-        int rgb;
-        ss >> rgb;
-        return cv::Scalar(rgb % 256, rgb / 256 % 256, rgb / (256 * 256));
-    }
-
-    double dist2_seg(double x, double y, double sx, double sy, double tx, double ty) {
-        double dx = tx - sx, dy = ty - sy, dx2 = dx * dx, dy2 = dy * dy, r2 = dx2 + dy2;
-        double tt = -(dx * (sx - x) + dy * (sy - y));
-        if (tt < 0) return (sx - x) * (sx - x) + (sy - y) * (sy - y);
-        if (tt > r2) return (tx - x) * (tx - x) + (ty - y) * (ty - y);
-        double f1 = dx * (sy - y) - dy * (sx - x);
-        return double(f1 * f1) / r2;
-    }
-
-    double dist2_rect(double x, double y, const Rect& rect) {
-        double res = DBL_MAX;
-        for (int i = 0; i < 4; i++) {
-            auto [sx, sy] = rect[i];
-            auto [tx, ty] = rect[(i + 1) & 3];
-            chmin(res, dist2_seg(x, y, sx, sy, tx, ty));
-        }
-        return res;
-    }
-
-    struct MouseParams;
-    using MouseParamsPtr = std::shared_ptr<MouseParams>;
-    struct MouseParams {
-        int pe, px, py, pf;
-        int e, x, y, f;
-        MouseParams() { e = x = y = f = pe = px = py = pf = INT_MAX; };
-        inline void load(int e_, int x_, int y_, int f_) {
-            pe = e; px = x; py = y; pf = f;
-            e = e_; x = x_; y = y_; f = f_;
-        }
-        inline bool clicked_left() const { return e == 1 && pe == 0; }
-        inline bool clicked_right() const { return e == 2 && pe == 0; }
-        inline bool released_left() const { return e == 4; }
-        inline bool released_right() const { return e == 5; }
-        inline bool drugging_left() const { return e == 0 && f == 1; }
-        inline bool drugging_right() const { return e == 0 && f == 2; }
-        inline std::pair<int, int> coord() const { return { x, y }; }
-        inline std::pair<int, int> displacement() const {
-            return { abs(x - px) > 10000 ? 0 : (x - px), abs(y - py) > 10000 ? 0 : (y - py) };
-        }
-        string stringify() const {
-            return format(
-                "MouseParams [(e,x,y,f)=(%d,%d,%d,%d), (pe,px,py,pf)=(%d,%d,%d,%d)]"
-                , e, x, y, f, pe, px, py, pf
-            );
-        }
-    };
-
-    struct ManualState;
-    using ManualStatePtr = std::shared_ptr<ManualState>;
-    struct ManualState {
-
-        int frame_id;
-        vector<StatePtr> states;
         vector<Rect> rects;
-        std::optional<Rect> nearest_rect;
-
-        void remove_successor_states() {
-            states.erase(states.begin() + frame_id + 1, states.end());
-            rects.erase(rects.begin() + frame_id + 1, rects.end());
-
-        }
-
-    };
-
-    struct ManualSolver {
-
-        const string winname = "img";
-        const int board_size = 1000;
-        const int grid_size;
-
-        InputPtr input;
-        //StatePtr state;
-
-        cv::Mat_<cv::Vec3b> img;
-
-        MouseParamsPtr mp;
-        ManualStatePtr msp;
-
-        ManualSolver(InputPtr input)
-            : input(input), grid_size(board_size / (input->N + 2)) {
-            mp = std::make_shared<MouseParams>();
-            msp = std::make_shared<ManualState>();
-            msp->frame_id = 0;
-            msp->states.push_back(std::make_shared<State>(input));
-            Rect sentinel;
-            for (int i = 0; i < 4; i++) sentinel[i] = { -2, -2 };
-            msp->rects.push_back(sentinel);
-        }
-
-        ManualSolver(InputPtr input, const vector<Rect>& rects) 
-            : input(input), grid_size(board_size / (input->N + 2)) {
-            mp = std::make_shared<MouseParams>();
-            msp = std::make_shared<ManualState>();
-            msp->frame_id = 0;
-            auto state = State(input);
-            msp->states.push_back(std::make_shared<State>(state));
-            Rect sentinel;
-            for (int i = 0; i < 4; i++) sentinel[i] = { -2, -2 };
-            msp->rects.push_back(sentinel);
-            for (const auto& rect : rects) {
-                state.apply_move(rect);
-                msp->frame_id++;
-                msp->states.push_back(std::make_shared<State>(state));
-                msp->rects.push_back(rect);
-            }
-        }
-
-        inline cv::Point cvt(int x, int y) const {
-            return { x * grid_size, y * grid_size };
-        }
-
-        inline cv::Point cvt(const Point& p) const {
-            return cvt(p.x, p.y);
-        }
-
-        inline Point icvt(int x, int y) const {
-            return { x / grid_size, y / grid_size };
-        }
-
-        std::optional<Rect> calc_nearest_candidate_rect(double thresh = 100.0) const {
-            auto state = msp->states[msp->frame_id];
-            double min_dist = DBL_MAX;
-            Rect selected;
-            for (const auto& [_, rect] : state->cands) {
-                auto magnified = rect;
-                for (auto& p : magnified) p.x *= grid_size, p.y *= grid_size;
-                if (chmin(min_dist, dist2_rect(mp->x, mp->y, magnified))) {
-                    selected = rect;
+        while (!cands.empty()) {
+            // 最小penalty + random で選ぶ
+            pii best{ INT_MAX, INT_MAX };
+            Rect best_rect;
+            for (const auto& [_, rect] : cands) {
+                pii now{ calc_penalty(rect) + perimeter(rect) * 2, rnd.next_int()};
+                if (chmin(best, now)) {
+                    best_rect = rect;
                 }
             }
-            if (min_dist == DBL_MAX || min_dist > thresh) return std::nullopt;
-            return selected;
+            apply_move(best_rect);
+            rects.push_back(best_rect);
         }
 
-        cv::Mat_<cv::Vec3b> create_board_image() const {
-
-            auto state = msp->states[msp->frame_id];
-
-            cv::Mat_<cv::Vec3b> base_img(board_size, board_size, cv::Vec3b(255, 255, 255));
-            
-            for (int y = 1; y <= input->N; y++) {
-                for (int x = 1; x <= input->N; x++) {
-                    cv::circle(base_img, cvt(Point(x, y)), 3, cv::Scalar(150, 150, 150), cv::FILLED);
-                }
-            }
-
-            for (int i = 1; i <= msp->frame_id; i++) {
-                const auto& rect = msp->rects[i];
-                for (int i = 0; i < 4; i++) {
-                    auto [x1, y1] = rect[i];
-                    auto [x2, y2] = rect[(i + 1) & 3];
-                    cv::line(base_img, cvt(rect[i]), cvt(rect[(i + 1) & 3]), cv::Scalar(0, 0, 0), 2);
-                }
-            }
-
-            if (msp->nearest_rect) {
-                auto rect = msp->nearest_rect.value();
-                for (int i = 0; i < 4; i++) {
-                    auto [x1, y1] = rect[i];
-                    auto [x2, y2] = rect[(i + 1) & 3];
-                    cv::line(base_img, cvt(rect[i]), cvt(rect[(i + 1) & 3]), scalar("0000ff"), 2);
-                }
-                cv::circle(base_img, cvt(rect[0]), 6, scalar("0000ff"), cv::FILLED);
-            }
-
-            for (int y = 1; y <= input->N; y++) {
-                for (int x = 1; x <= input->N; x++) {
-                    if (state->has_point[y][x]) {
-                        cv::circle(base_img, cvt(Point(x, y)), 6, cv::Scalar(0, 0, 0), cv::FILLED);
-                    }
-                    if (msp->frame_id >= 1) {
-                        cv::circle(base_img, cvt(msp->rects[msp->frame_id][0]), 6, cv::Scalar(0, 0, 255), cv::FILLED);
-                    }
-                }
-            }
-
-            auto rect_img = base_img.clone();
-
-            for (const auto& [_, rect] : state->cands) {
-                for (int i = 0; i < 4; i++) {
-                    auto [x1, y1] = rect[i];
-                    auto [x2, y2] = rect[(i + 1) & 3];
-                    cv::line(rect_img, cvt(rect[i]), cvt(rect[(i + 1) & 3]), scalar("0000ff"), 2);
-                }
-            }
-
-            cv::Mat_<cv::Vec3b> img;
-            cv::addWeighted(base_img, 0.8, rect_img, 0.2, 0, img);
-
-            return img;
-        }
-
-        void vis() {
-
-            cv::namedWindow(winname, cv::WINDOW_AUTOSIZE);
-            img = create_board_image();
-            cv::imshow(winname, img);
-
-            cv::createTrackbar("frame id", winname, &msp->frame_id, msp->states.size() - 1, frame_callback, this);
-            cv::setTrackbarMin("frame id", winname, 0);
-
-            cv::setMouseCallback(winname, mouse_callback, this);
-
-            while (true) {
-                int c = cv::waitKey(15);
-                if (c == 27 /*ESC*/) break;
-                if (c == 8 /*backspace*/) {
-                    msp->frame_id = std::max(msp->frame_id - 1, 0);
-                    cv::setTrackbarPos("frame id", winname, msp->frame_id);
-                }
-                if (c == 's' /*save*/) {
-                    vector<Rect> ans;
-                    for (int i = 1; i <= msp->frame_id; i++) {
-                        ans.push_back(msp->rects[i]);
-                    }
-                    Output output(ans, -1, -1, -1.0);
-                    std::ofstream ofs("output.txt");
-                    ofs << output;
-                    cerr << "saved!" << endl;
-                    ofs.close();
-                }
-                
-                img = create_board_image();
-                cv::imshow(winname, img);
-            }
-
-        }
-
-        void fit_frame_trackbar(bool move_newest = false) {
-            cv::setTrackbarMax("frame id", winname, msp->states.size() - 1);
-            if (move_newest) {
-                msp->frame_id = msp->states.size() - 1;
-                cv::setTrackbarPos("frame id", winname, msp->frame_id);
-            }
-        }
-
-        void exec_mouse_action() {
-            msp->nearest_rect = calc_nearest_candidate_rect();
-            if (auto clicked_left = mp->clicked_left()) {
-                if (msp->nearest_rect) {
-                    msp->remove_successor_states();
-                    auto state = *msp->states.back();
-                    auto rect = msp->nearest_rect.value();
-                    cerr << rect << '\n';
-                    state.apply_move(rect);
-                    msp->states.push_back(std::make_shared<State>(state));
-                    msp->rects.push_back(rect);
-                    fit_frame_trackbar(true);
-                    msp->nearest_rect = std::nullopt;
-                }
-            }
-        }
-
-        static void mouse_callback(int e, int x, int y, int f, void* param) {
-            auto vis = static_cast<ManualSolver*>(param);
-            vis->mp->load(e, x, y, f);
-            vis->exec_mouse_action();
-        }
-
-        static void frame_callback(int id, void* param) {
-            auto vis = static_cast<ManualSolver*>(param);
-            vis->msp->frame_id = id;
-            cerr << format(
-                "frame_id: %d, score: %d -> %d\n",
-                id,
-                id - 1 >= 0 ? vis->msp->states[id - 1]->eval() : 0,
-                vis->msp->states[id]->eval()
-            );
-        }
-
-    };
-
-
-    void solve_manual(InputPtr input) {
-
-        ManualSolver msol(input);
-        msol.vis();
-
+        return { rects, eval(), -1, -1.0 };
     }
 
-}
-#endif
+};
+
+
 
 Output solve(InputPtr input) {
 
@@ -1094,33 +886,21 @@ Output solve(InputPtr input) {
 Output solve2(InputPtr input) {
 
     Timer timer;
-
     Xorshift rnd;
-    State state(input);
 
-    vector<Rect> ans;
-    int score = state.eval();
-
-    int turn = 0;
-    while (!state.cands.empty()) {
-        turn++;
-        Rect best_rect;
-        pii best_eval = { INT_MAX, INT_MAX };
-        for (const auto& [_, rect] : state.cands) {
-            State next_state(state);
-            next_state.apply_move(rect);
-            pii eval = { perimeter(rect), -next_state.num_cands_perimeter2 };
-            if (chmin(best_eval, eval)) {
-                best_rect = rect;
-            }
+    State init_state(input);
+    State state(init_state);
+    auto best_res = state.solve_greedy(rnd);
+    while (timer.elapsed_ms() < 4900) {
+        state = init_state;
+        auto res = state.solve_greedy(rnd);
+        if (best_res.score < res.score) {
+            best_res = res;
         }
-        state.apply_move(best_rect);
-        ans.push_back(best_rect);
-        score = state.eval();
-        //dump(turn, best_eval, score);
     }
 
-    return { ans, score, -1, timer.elapsed_ms() };
+    return best_res;
+
 }
 
 #ifdef _MSC_VER
@@ -1160,64 +940,7 @@ void batch_test(int seed_begin = 0, int num_seed = 100, int step = 1) {
 }
 #endif
 
-void test() {
-#ifdef _MSC_VER
-    std::ifstream ifs(R"(tools_win\in\0000.txt)");
-    std::istream& in = ifs;
-#else
-    std::istream& in = cin;
-#endif
-    auto input = std::make_shared<Input>(in);
-    string output_raw = R"(20
-9 15 12 12 15 15 12 18
-15 20 12 17 15 14 18 17
-23 22 19 22 19 12 23 12
-23 14 22 15 21 14 22 13
-10 14 10 13 12 13 12 14
-11 11 12 11 12 12 11 12
-18 20 15 20 15 19 18 19
-19 16 22 19 21 20 18 17
-12 19 12 18 15 18 15 19
-15 22 12 19 15 16 18 19
-14 22 15 22 15 24 14 24
-15 8 18 11 15 14 12 11
-10 15 9 15 9 14 10 14
-11 18 12 19 10 21 9 20
-22 23 20 21 21 20 23 22
-21 15 18 15 18 14 21 14
-15 26 13 24 15 22 17 24
-20 20 16 24 14 22 18 18
-21 17 18 20 15 17 18 14
-11 14 10 13 11 12 12 13
-)";
-    
-    vector<Rect> output;
-    {
-        std::istringstream iss(output_raw);
-        int K;
-        iss >> K;
-        output.resize(K);
-        iss >> output;
-        for (auto& [p0, p1, p2, p3] : output) {
-            p0.x++, p1.x++, p2.x++, p3.x++;
-            p0.y++, p1.y++, p2.y++, p3.y++;
-        }
-    }
 
-    {
-        State state(input);
-        for (const auto& rect : output) {
-            state.apply_move(rect);
-        }
-        dump(state.eval());
-    }
-
-    {
-        State state(input);
-        dump(state.calc_rect({ 15, 18 }, 1));
-    }
-
-}
 
 int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
 
@@ -1239,18 +962,10 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     batch_test();
 #else
     auto input = std::make_shared<Input>(in);
-
     auto ans = solve(input);
     dump(ans.score);
     out << ans;
     dump(ans.elapsed_ms);
-
-#ifdef HAVE_OPENCV_HIGHGUI
-    if (true) {
-        auto msol = std::make_shared<NVis::ManualSolver>(input, ans.rects);
-        msol->vis();
-    }
-#endif
 #endif
 
     return 0;
