@@ -244,7 +244,27 @@ std::istream& operator>>(std::istream& in, Point& p) {
     return in;
 }
 
-using Rect = array<Point, 4>;
+//using Rect = array<Point, 4>;
+
+struct Rect {
+    union {
+        int8_t data[8];
+        uint64_t data64;
+    };
+    Rect() {}
+    Rect(const Point& p0, const Point& p1, const Point& p2, const Point& p3) {
+        data[0] = p0.x; data[1] = p0.y;
+        data[2] = p1.x; data[3] = p1.y;
+        data[4] = p2.x; data[5] = p2.y;
+        data[6] = p3.x; data[7] = p3.y;
+    }
+    Point operator[](int i) const {
+        return { data[i << 1], data[(i << 1) + 1] };
+    }
+    std::tuple<Point, Point, Point, Point> get_points() const {
+        return { {data[0], data[1]}, {data[2], data[3]}, {data[4], data[5]}, {data[6], data[7]} };
+    }
+};
 
 // 面積の小さい順に長方形を置いていくと頑張って 39M くらい
 inline int area(const Rect& rect) {
@@ -333,7 +353,8 @@ struct Output {
     string stringify() const {
         string ans;
         ans += format("%lld\n", rects.size());
-        for (const auto& [p0, p1, p2, p3] : rects) {
+        for (const auto& rect : rects) {
+            auto [p0, p1, p2, p3] = rect.get_points();
             ans += format(
                 "%d %d %d %d %d %d %d %d\n",
                 p0.x - 1, p0.y - 1, p1.x - 1, p1.y - 1, p2.x - 1, p2.y - 1, p3.x - 1, p3.y - 1
@@ -356,10 +377,6 @@ struct State {
     // (x,y) から d 方向に進んで初めて印に衝突する印
     array<array<array<Point, 64>, 64>, 8> next_point;
 
-    array<array<array<bool, 8>, 64>, 64> used;
-    array<array<bool, 64>, 64> used_axes;
-    array<array<bool, 64>, 64> used_diag;
-
     // 0: left to right
     // 1: top-left to bottom-right
     // 2: top to down
@@ -373,7 +390,6 @@ struct State {
 
     // 現時点での重みの総和
     int weight_sum;
-    int penalty;
 
     // ビームサーチ等することを考慮して、追加した長方形の情報はメンバで持たないようにする
 
@@ -388,10 +404,6 @@ struct State {
         for (const auto& [x, y] : input->ps) {
             has_point[y][x] = true;
         }
-
-        memset(used.data(), 0, sizeof(bool) * 64 * 64 * 8);
-        memset(used_axes.data(), 0, sizeof(bool) * 64 * 64);
-        memset(used_diag.data(), 0, sizeof(bool) * 64 * 64);
 
         std::memset(used_bit.data(), 0, sizeof(uint64_t) * 4 * 128);
 
@@ -419,7 +431,6 @@ struct State {
         }
 
         weight_sum = input->Q;
-        penalty = 0;
 
     }
 
@@ -512,51 +523,7 @@ struct State {
             int dy = y < ty ? 1 : (y > ty ? -1 : 0);
             int dir = sgn2dir[dy + 1][dx + 1];
             draw_line(rect[i], dir, std::max(abs(x - tx), abs(y - ty)));
-
-            auto& u = (dir & 1) ? used_diag : used_axes;
-            tx -= dx; ty -= dy;
-            while (x != tx || y != ty) {
-                used[y][x][dir] = true;
-                x += dx;
-                y += dy;
-                used[y][x][dir ^ 4] = true;
-                u[y][x] = true;
-            }
-            used[y][x][dir] = true;
-            x += dx;
-            y += dy;
-            used[y][x][dir ^ 4] = true;
         }
-    }
-
-    int calc_penalty(const Rect& rect) const {
-        // 印の存在しない点について
-        // 1. 縦横に直線が走る -> 小penalty
-        // 2. 斜めに直線が走る -> 小penalty
-        // 3. 1 と 2 両方(その点は今後 p0 として使えない) -> 大penalty
-        int penalty = 0;
-        for (int i = 0; i < 4; i++) {
-            auto [x, y] = rect[i];
-            auto [tx, ty] = rect[(i + 1) % 4];
-            int dx = x < tx ? 1 : (x > tx ? -1 : 0);
-            int dy = y < ty ? 1 : (y > ty ? -1 : 0);
-            int dir = sgn2dir[dy + 1][dx + 1];
-
-            auto& u1 = (dir & 1) ? used_diag : used_axes;
-            auto& u2 = (dir & 1) ? used_axes : used_diag;
-            tx -= dx; ty -= dy;
-            while (x != tx || y != ty) {
-                x += dx;
-                y += dy;
-                // bool b1 = u1[y][x], b2 = u2[y][x];
-                // b1 & b2: 0
-                // b1 & !b2: 0
-                // !b1 & !b2: 1
-                // !b1 & b2: 9
-                penalty += (u1[y][x] ? 0 : (u2[y][x] ? 9 : 1));
-            }
-        }
-        return penalty;
     }
 
     // p0 から dir 方向に長さ dist の線を考えたときに、既に塗られている区間が存在するか？
@@ -597,22 +564,6 @@ struct State {
             int dy = y < ty ? 1 : (y > ty ? -1 : 0);
             int dir = sgn2dir[dy + 1][dx + 1];
             if (is_overlapped(rect[i], dir, std::max(abs(x - tx), abs(y - ty)))) return true;
-        }
-        return false;
-    }
-
-    bool is_overlapped2(const Rect& rect) const {
-        // 他の長方形との共通部分が存在しないなら true
-        for (int i = 0; i < 4; i++) {
-            auto [x, y] = rect[i];
-            auto [tx, ty] = rect[(i + 1) & 3];
-            int dx = x < tx ? 1 : (x > tx ? -1 : 0);
-            int dy = y < ty ? 1 : (y > ty ? -1 : 0);
-            int dir = sgn2dir[dy + 1][dx + 1];
-            while (x != tx || y != ty) {
-                if (used[y][x][dir]) return true;
-                x += dx; y += dy;
-            }
         }
         return false;
     }
@@ -797,8 +748,6 @@ struct State {
     }
 
     void apply_move(const Rect& rect) {
-        //penalty += perimeter(rect);
-        penalty += calc_penalty(rect);
         add_point(rect[0]);
         draw_rect(rect);
         remove_cands();
@@ -814,26 +763,6 @@ struct State {
             if (!pred(best, cands[i].second)) best = cands[i].second;
         }
         return { true, best };
-    }
-
-    Output solve_greedy(Xorshift& rnd) {
-
-        vector<Rect> rects;
-        while (!cands.empty()) {
-            // 最小penalty + random で選ぶ
-            pii best{ INT_MAX, INT_MAX };
-            Rect best_rect;
-            for (const auto& [_, rect] : cands) {
-                pii now{ calc_penalty(rect) + perimeter(rect) * 2, rnd.next_int()};
-                if (chmin(best, now)) {
-                    best_rect = rect;
-                }
-            }
-            apply_move(best_rect);
-            rects.push_back(best_rect);
-        }
-
-        return { rects, eval(), -1, -1.0 };
     }
 
 };
@@ -881,26 +810,6 @@ Output solve(InputPtr input) {
     }
 
     return { best_rects, best_score, max_cands, timer.elapsed_ms() };
-}
-
-Output solve2(InputPtr input) {
-
-    Timer timer;
-    Xorshift rnd;
-
-    State init_state(input);
-    State state(init_state);
-    auto best_res = state.solve_greedy(rnd);
-    while (timer.elapsed_ms() < 4900) {
-        state = init_state;
-        auto res = state.solve_greedy(rnd);
-        if (best_res.score < res.score) {
-            best_res = res;
-        }
-    }
-
-    return best_res;
-
 }
 
 #ifdef _MSC_VER
@@ -958,7 +867,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     std::ostream& out = cout;
 #endif
 
-#if 0
+#if 1
     batch_test();
 #else
     auto input = std::make_shared<Input>(in);
