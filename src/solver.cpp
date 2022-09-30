@@ -251,7 +251,8 @@ struct Rect {
         int8_t data[8];
         uint64_t data64;
     };
-    Rect() {}
+    Rect() : data64(0) {}
+    Rect(uint64_t data64) : data64(data64) {}
     Rect(const Point& p0, const Point& p1, const Point& p2, const Point& p3) {
         data[0] = p0.x; data[1] = p0.y;
         data[2] = p1.x; data[3] = p1.y;
@@ -294,8 +295,8 @@ inline int perimeter(const Rect & rect) {
 
 std::ostream& operator<<(std::ostream& os, const Rect& r) {
     os << format("Rect [p0=(%2d,%2d), p1=(%2d,%2d), p2=(%2d,%2d), p3=(%2d,%2d), half_perimeter=%d]",
-        r[0].x, r[0].y, r[1].x, r[1].y, r[2].x, r[2].y, r[3].x, r[3].y, perimeter(r)
-        );
+        r[0].x-1, r[0].y-1, r[1].x-1, r[1].y-1, r[2].x-1, r[2].y-1, r[3].x-1, r[3].y-1, perimeter(r)
+    );
     return os;
 }
 
@@ -372,10 +373,19 @@ struct State {
     int N;
 
     // 外周は印が付いているとする TODO: uint64_t?
+    array<array<bool, 64>, 64> has_initial_point; // TODO: input に回していい
     array<array<bool, 64>, 64> has_point;
+
+    // ある点 p に印を付けて長方形 r を描画したとき
+    // 1. r[1], r[2], r[3] は p よりも前に印を付けられていなければならない
+    // 2. p が他の長方形 r の辺上にあるとき、r[0] は p よりも前に印を付けられていなければならない（高々 2 つ)
+    array<array<int, 64>, 64> num_children;
+    array<array<array<Rect, 32>, 64>, 64> children;
 
     // (x,y) から d 方向に進んで初めて印に衝突する印
     array<array<array<Point, 64>, 64>, 8> next_point;
+
+    array<array<array<Rect, 8>, 64>, 64> used;
 
     // 0: left to right
     // 1: top-left to bottom-right
@@ -391,23 +401,40 @@ struct State {
     // 現時点での重みの総和
     int weight_sum;
 
-    // ビームサーチ等することを考慮して、追加した長方形の情報はメンバで持たないようにする
-
     State(InputPtr input) : input(input), N(input->N) {
         // 外周は true
-        for (int y = 0; y < 64; y++) for (int x = 0; x < 64; x++) has_point[y][x] = true;
+        for (int y = 0; y < 64; y++) {
+            for (int x = 0; x < 64; x++) {
+                has_initial_point[y][x] = true;
+                has_point[y][x] = true;
+            }
+        }
         for (int y = 1; y <= N; y++) {
             for (int x = 1; x <= N; x++) {
+                has_initial_point[y][x] = false;
                 has_point[y][x] = false;
             }
         }
         for (const auto& [x, y] : input->ps) {
+            has_initial_point[y][x] = true;
             has_point[y][x] = true;
         }
 
+        std::memset(num_children.data(), 0, sizeof(int) * 64 * 64);
+        std::memset(children.data(), 0, sizeof(Rect) * 64 * 64 * 4);
+
+        std::memset(used.data(), 0, sizeof(Rect) * 64 * 64 * 8);
         std::memset(used_bit.data(), 0, sizeof(uint64_t) * 4 * 128);
 
         // 初期化だしナイーブに計算している
+        update_next_point();
+        update_cands();
+
+        weight_sum = input->Q;
+
+    }
+
+    void update_next_point() {
         for (int sy = 1; sy <= N; sy++) {
             for (int sx = 1; sx <= N; sx++) {
                 for (int d = 0; d < 8; d++) {
@@ -417,26 +444,10 @@ struct State {
                 }
             }
         }
-
-        for (int y = 1; y <= input->N; y++) {
-            for (int x = 1; x <= input->N; x++) {
-                if (has_point[y][x]) continue;
-                Point p0(x, y);
-                for (int dir = 0; dir < 8; dir++) {
-                    auto [ok, rect] = check_p0(p0, dir);
-                    if (!ok) continue;
-                    cands.emplace_back(dir, rect);
-                }
-            }
-        }
-
-        weight_sum = input->Q;
-
     }
 
-    // ナイーブに置ける場所を列挙する　デバッグ用
-    vector<std::pair<int, Rect>> enum_cands_naive() const {
-        vector<std::pair<int, Rect>> cands;
+    void update_cands() {
+        cands.clear();
         for (int y = 1; y <= input->N; y++) {
             for (int x = 1; x <= input->N; x++) {
                 if (has_point[y][x]) continue;
@@ -448,7 +459,6 @@ struct State {
                 }
             }
         }
-        return cands;
     }
 
     // 正規化？した得点の計算
@@ -465,7 +475,7 @@ struct State {
     }
 
     // p0 から dir 方向に長さ dist の線を描画する
-    void draw_line(Point p0, int dir, int dist) {
+    void toggle_line(Point p0, int dir, int dist) {
         Point p1 = p0.next(dir, dist);
         if (dir >= 4) {
             std::swap(p0, p1);
@@ -474,7 +484,7 @@ struct State {
         if (dir == 0) {
             // left to right
             uint64_t mask = ((1ULL << p1.x) - 1) ^ ((1ULL << p0.x) - 1);
-            used_bit[0][p0.y] |= mask;
+            used_bit[0][p0.y] ^= mask;
         }
         else if (dir == 1) {
             // top-left to bottom-right
@@ -489,12 +499,12 @@ struct State {
             //   0123456
             int r = N + 1 - p0.x + p0.y, c = std::min(p0.x, p0.y);
             uint64_t mask = ((1ULL << (c + dist)) - 1) ^ ((1ULL << c) - 1);
-            used_bit[1][r] |= mask;
+            used_bit[1][r] ^= mask;
         }
         else if (dir == 2) {
             // top to bottom
             uint64_t mask = ((1ULL << p1.y) - 1) ^ ((1ULL << p0.y) - 1);
-            used_bit[2][p0.x] |= mask;
+            used_bit[2][p0.x] ^= mask;
         }
         else {
             // top-right to bottom-left
@@ -510,19 +520,25 @@ struct State {
             // 6543210
             int r = p0.x + p0.y, c = std::min(N + 1 - p0.x, p0.y);
             uint64_t mask = ((1ULL << (c + dist)) - 1) ^ ((1ULL << c) - 1);
-            used_bit[3][r] |= mask;
+            used_bit[3][r] ^= mask;
         }
     }
 
     // 長方形の描画
-    void draw_rect(const Rect& rect) {
+    void toggle_rect(const Rect& rect) {
         for (int i = 0; i < 4; i++) {
             auto [x, y] = rect[i];
             auto [tx, ty] = rect[(i + 1) % 4];
             int dx = x < tx ? 1 : (x > tx ? -1 : 0);
             int dy = y < ty ? 1 : (y > ty ? -1 : 0);
             int dir = sgn2dir[dy + 1][dx + 1];
-            draw_line(rect[i], dir, std::max(abs(x - tx), abs(y - ty)));
+            toggle_line(rect[i], dir, std::max(abs(x - tx), abs(y - ty)));
+            while (x != tx || y != ty) {
+                used[y][x][dir].data64 ^= rect.data64;
+                x += dx;
+                y += dy;
+                used[y][x][dir ^ 4].data64 ^= rect.data64;
+            }
         }
     }
 
@@ -749,9 +765,140 @@ struct State {
 
     void apply_move(const Rect& rect) {
         add_point(rect[0]);
-        draw_rect(rect);
+        auto [nx, ny] = rect[0];
+        for (int i = 0; i < 4; i++) {
+            auto [x, y] = rect[i];
+            if (has_initial_point[y][x]) continue;
+            auto& nc = num_children[y][x];
+            children[y][x][nc++] = rect;
+            assert(nc <= 32);
+        }
+        for (int dir = 0; dir < 4; dir++) {
+            auto r1 = used[ny][nx][dir];
+            auto r2 = used[ny][nx][dir ^ 4];
+            if (r1.data64 && r1.data64 == r2.data64) {
+                auto [x, y] = r1[0];
+                auto& nc = num_children[y][x];
+                children[y][x][nc++] = rect;
+                assert(nc <= 32);
+            }
+        }
+        toggle_rect(rect);
         remove_cands();
         add_cands(rect[0]);
+    }
+
+    // 全ての点から削除しないといけない
+    void remove_point_dfs(const Point& p, vector<Rect>& del) {
+        auto [x, y] = p;
+        assert(has_point[y][x] && !has_initial_point[y][x]);
+        // 0 番目は自身なので最後に消す
+        for (int i = 1; i < num_children[y][x]; i++) {
+            auto& rect = children[y][x][i];
+            auto np = rect[0];
+            auto [nx, ny] = np;
+            rect.data64 = 0;
+            if (nx == 0 || !has_point[ny][nx] || has_initial_point[ny][nx]) continue;
+            remove_point_dfs(np, del);
+        }
+        auto& rect = children[y][x][0];
+        del.push_back(rect);
+        has_point[y][x] = false;
+        weight_sum -= input->ws[y][x];
+        toggle_rect(rect);
+        rect.data64 = 0;
+        num_children[y][x] = 0;
+    }
+
+    void remove_rect_naive(const Rect& rect) {
+        for (int y = 1; y <= input->N; y++) {
+            for (int x = 1; x <= input->N; x++) {
+                if (!has_point[y][x] || has_initial_point[y][x]) continue;
+                auto& numc = num_children[y][x];
+                for (int i = 0; i < numc; i++) {
+                    if (rect.data64 == children[y][x][i].data64) {
+                        for (int j = i + 1; j < numc; j++) {
+                            children[y][x][j - 1] = children[y][x][j];
+                        }
+                        children[y][x][numc - 1].data64 = 0;
+                        numc--;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    void remove_point(const Point& p) {
+        vector<Rect> del;
+        remove_point_dfs(p, del);
+        for (const auto& r : del) {
+            remove_rect_naive(r);
+        }
+        // update next_point, cands
+        update_next_point();
+        update_cands();
+    }
+
+    void random_remove(Xorshift& rnd) {
+        vector<Point> ps;
+        for (int y = 1; y <= input->N; y++) {
+            for (int x = 1; x <= input->N; x++) {
+                if (has_point[y][x] && !has_initial_point[y][x]) {
+                    ps.emplace_back(x, y);
+                }
+            }
+        }
+        auto p = ps[rnd.next_int(ps.size())];
+        remove_point(p);
+    }
+
+    Output create_output() const {
+        // topological sort
+        std::map<uint64_t, int> r2i;
+        vector<uint64_t> i2r;
+        for (int y = 1; y <= input->N; y++) {
+            for (int x = 1; x <= input->N; x++) {
+                if (!has_point[y][x] || has_initial_point[y][x]) continue;
+                auto u = children[y][x][0].data64;
+                assert(!r2i.count(u));
+                r2i[u] = i2r.size();
+                i2r.push_back(u);
+            }
+        }
+        int V = r2i.size();
+        vector<vector<int>> graph(V);
+        vector<int> indeg(V);
+        for (int y = 1; y <= input->N; y++) {
+            for (int x = 1; x <= input->N; x++) {
+                if (!has_point[y][x] || has_initial_point[y][x]) continue;
+                auto u64 = children[y][x][0].data64;
+                auto u = r2i[u64];
+                auto numc = num_children[y][x];
+                for (int i = 1; i < numc; i++) {
+                    auto v64 = children[y][x][i].data64;
+                    auto v = r2i[v64];
+                    graph[u].push_back(v);
+                    indeg[v]++;
+                }
+            }
+        }
+        std::queue<uint64_t> qu;
+        for (int u = 0; u < V; u++) {
+            if (!indeg[u]) qu.push(u);
+        }
+        vector<Rect> ans;
+        while (!qu.empty()) {
+            auto u = qu.front(); qu.pop();
+            Rect r; r.data64 = i2r[u];
+            ans.push_back(r);
+            for (auto v : graph[u]) {
+                assert(indeg[v] > 0);
+                indeg[v]--;
+                if (indeg[v] == 0) qu.push(v);
+            }
+        }
+        return Output(ans, eval(), -1, -1.0);
     }
 
     // pred に従い次に選択すべき長方形を候補から貪欲に選択する
@@ -772,44 +919,49 @@ struct State {
 Output solve(InputPtr input) {
 
     Timer timer;
-
-    vector<Rect> best_rects;
-    int best_score = -1;
-
     Xorshift rnd;
-    State init_state(input);
 
-    int max_cands = init_state.cands.size();
+    // 貪欲のタイブレークとして randomness を加えている
+    auto f = [&input, &rnd](const Rect& lhs, const Rect& rhs) {
+        return
+            std::make_pair(perimeter(lhs), rnd.next_int())
+            < std::make_pair(perimeter(rhs), rnd.next_int());
+    };
 
-    // 時間いっぱい回して一番よかったものを採用
+    State state(input);
+
+    // まずは貪欲
+    while (!state.cands.empty()) {
+        auto [ok, rect] = state.choose_greedy(f);
+        if (!ok) break;
+        state.apply_move(rect);
+    }
+    int best_score = state.eval();
+    dump(best_score);
+
+    // 山を登る
     int outer_loop = 0;
     constexpr int timelimit = 4900;
     while (timer.elapsed_ms() < timelimit) {
-        if (timer.elapsed_ms() < timelimit) {
-            auto state(init_state);
-            // 貪欲のタイブレークとして randomness を加えている
-            auto f = [&input, &rnd](const Rect& lhs, const Rect& rhs) {
-                return 
-                    std::make_pair(perimeter(lhs), rnd.next_int())
-                    < std::make_pair(perimeter(rhs), rnd.next_int());
-            };
-            vector<Rect> rects;
-            while (true) {
-                auto [ok, rect] = state.choose_greedy(f);
-                if (!ok) break;
-                rects.push_back(rect);
-                state.apply_move(rect);
-                chmax(max_cands, (int)state.cands.size());
-                if (timer.elapsed_ms() > timelimit) break;
-            }
-            if (chmax(best_score, state.eval())) {
-                best_rects = rects;
-            }
+        auto nstate(state);
+        nstate.random_remove(rnd);
+        while (!nstate.cands.empty()) {
+            auto [ok, rect] = nstate.choose_greedy(f);
+            if (!ok) break;
+            nstate.apply_move(rect);
+        }
+        if (chmax(best_score, nstate.eval())) {
+            state = nstate;
+            dump(best_score);
         }
         outer_loop++;
     }
+    dump(outer_loop);
 
-    return { best_rects, best_score, max_cands, timer.elapsed_ms() };
+    auto output = state.create_output();
+    output.elapsed_ms = timer.elapsed_ms();
+
+    return output;
 }
 
 #ifdef _MSC_VER
@@ -858,8 +1010,8 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
 #endif
 
 #ifdef _MSC_VER
-    std::ifstream ifs(R"(tools_win\in\0000.txt)");
-    std::ofstream ofs(R"(tools_win\out\0000.txt)");
+    std::ifstream ifs(R"(tools_win\in\0005.txt)");
+    std::ofstream ofs(R"(tools_win\out\0005.txt)");
     std::istream& in = ifs;
     std::ostream& out = ofs;
 #else
@@ -867,7 +1019,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     std::ostream& out = cout;
 #endif
 
-#if 1
+#if 0
     batch_test();
 #else
     auto input = std::make_shared<Input>(in);
