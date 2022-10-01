@@ -230,17 +230,19 @@ constexpr int sgn2dir[3][3] = {
 };
 
 struct Point { // TODO: to int8_t
-    int x, y;
+    int8_t x, y;
     Point(int x = 0, int y = 0) : x(x), y(y) {}
     Point next(int dir) const { return { x + dx8[dir], y + dy8[dir] }; }
     Point next(int dir, int distance) const { return { x + dx8[dir] * distance, y + dy8[dir] * distance }; }
     inline bool operator==(const Point& rhs) const { return x == rhs.x && y == rhs.y; }
     inline bool operator!=(const Point& rhs) const { return !(*this == rhs); }
     inline bool operator<(const Point& rhs) const { return y == rhs.y ? x < rhs.x : y < rhs.y; }
-    string stringify() const { return "[" + std::to_string(x) + ", " + std::to_string(y) + "]"; }
+    string stringify() const { return "[" + std::to_string((int)x - 1) + ", " + std::to_string((int)y - 1) + "]"; }
 };
 std::istream& operator>>(std::istream& in, Point& p) {
-    in >> p.x >> p.y;
+    int x, y;
+    in >> x >> y;
+    p.x = x; p.y = y;
     return in;
 }
 
@@ -307,7 +309,7 @@ inline int area(const Rect& rect) {
 
 // "長方形の描画によって塗られる線の長さが少ない方がよい"と考えると、
 // 面積より周長を評価に用いるほうが妥当 -> これで 42M くらい
-inline int perimeter(const Rect & rect) {
+inline int perimeter(const Rect& rect) {
     // return value is halved
     if (rect[0].x == rect[1].x || rect[0].y == rect[1].y) {
         int d1 = abs(rect[0].x - rect[1].x) + abs(rect[0].y - rect[1].y);
@@ -321,7 +323,7 @@ inline int perimeter(const Rect & rect) {
 
 std::ostream& operator<<(std::ostream& os, const Rect& r) {
     os << format("Rect [p0=(%2d,%2d), p1=(%2d,%2d), p2=(%2d,%2d), p3=(%2d,%2d), half_perimeter=%d]",
-        r[0].x-1, r[0].y-1, r[1].x-1, r[1].y-1, r[2].x-1, r[2].y-1, r[3].x-1, r[3].y-1, perimeter(r)
+        r[0].x - 1, r[0].y - 1, r[1].x - 1, r[1].y - 1, r[2].x - 1, r[2].y - 1, r[3].x - 1, r[3].y - 1, perimeter(r)
     );
     return os;
 }
@@ -408,6 +410,7 @@ struct State {
     // 1. r[1], r[2], r[3] は p よりも前に印を付けられていなければならない
     // 2. p が他の長方形 r の辺上にあるとき、r[0] は p よりも前に印を付けられていなければならない（高々 2 つ)
     array<array<vector<Rect>, 64>, 64> children;
+    array<array<vector<Point>, 64>, 64> parents;
 
     // (x,y) から d 方向に進んで初めて印に衝突する印
     array<array<array<Point, 64>, 64>, 8> next_point;
@@ -542,7 +545,7 @@ struct State {
             // 4443210 c
             // 5543210 
             // 6543210
-            int r = p0.x + p0.y, c = std::min(N + 1 - p0.x, p0.y);
+            int r = p0.x + p0.y, c = std::min(N + 1 - p0.x, (int)p0.y);
             uint64_t mask = ((1ULL << (c + dist)) - 1) ^ ((1ULL << c) - 1);
             used_bit[3][r] ^= mask;
         }
@@ -590,7 +593,7 @@ struct State {
             return used_bit[2][p0.x] & mask;
         }
         // top-right to bottom-left
-        int r = p0.x + p0.y, c = std::min(N + 1 - p0.x, p0.y);
+        int r = p0.x + p0.y, c = std::min(N + 1 - p0.x, (int)p0.y);
         uint64_t mask = ((1ULL << (c + dist)) - 1) ^ ((1ULL << c) - 1);
         return used_bit[3][r] & mask;
     }
@@ -794,13 +797,18 @@ struct State {
             auto [x, y] = rect[i];
             if (has_initial_point[y][x]) continue;
             children[y][x].push_back(rect);
+            if (i) {
+                parents[ny][nx].emplace_back(x, y);
+            }
         }
+        // 点が他の長方形の辺上にある
         for (int dir = 0; dir < 4; dir++) {
             auto r1 = used[ny][nx][dir];
             auto r2 = used[ny][nx][dir ^ 4];
             if (r1.data64 && r1.data64 == r2.data64) {
                 auto [x, y] = r1[0];
                 children[y][x].push_back(rect);
+                parents[ny][nx].emplace_back(x, y);
             }
         }
         toggle_rect(rect);
@@ -809,7 +817,7 @@ struct State {
     }
 
     // 全ての点から削除しないといけない
-    void remove_point_dfs(const Point& p, vector<Rect>& del) {
+    void remove_point_dfs(const Point& p) {
         auto [x, y] = p;
         assert(has_point[y][x] && !has_initial_point[y][x]);
         // 0 番目は自身なので最後に消す
@@ -819,10 +827,16 @@ struct State {
             auto [nx, ny] = np;
             rect.data64 = 0;
             if (nx == 0 || !has_point[ny][nx] || has_initial_point[ny][nx]) continue;
-            remove_point_dfs(np, del);
+            remove_point_dfs(np);
         }
         auto& rect = children[y][x][0];
-        del.push_back(rect);
+        for (auto [px, py] : parents[y][x]) {
+            auto& pcs = children[py][px];
+            auto it = std::find(pcs.begin(), pcs.end(), rect);
+            if (it != pcs.end()) {
+                pcs.erase(it);
+            }
+        }
         has_point[y][x] = false;
         weight_sum -= input->ws[y][x];
         for (int d = 0; d < 8; d++) {
@@ -838,6 +852,7 @@ struct State {
         toggle_rect(rect);
         rect.data64 = 0;
         children[y][x].clear();
+        parents[y][x].clear();
     }
 
     void remove_rect_naive(const Rect& rect) {
@@ -854,11 +869,7 @@ struct State {
     }
 
     void remove_point(const Point& p) {
-        vector<Rect> del;
-        remove_point_dfs(p, del);
-        for (const auto& r : del) {
-            remove_rect_naive(r);
-        }
+        remove_point_dfs(p);
         update_cands();
     }
 
@@ -989,7 +1000,7 @@ Output solve(InputPtr input) {
             state = nstate;
             if (chmax(best_score, now_score)) {
                 best_state = state;
-                dump(best_score);
+                //dump(best_score);
             }
         }
         outer_loop++;
