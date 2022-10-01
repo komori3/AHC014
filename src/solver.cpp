@@ -408,7 +408,9 @@ struct State {
     // 作れる長方形の候補
     // 便宜上 pair の first に p0->p1 の方向情報も入れている
     // p0->p1->p2->p3 は時計回りで統一する
-    vector<std::pair<int, Rect>> cands;
+    int num_cands;
+    array<int, 1024> cand_dirs;
+    array<Rect, 1024> cand_rects;
 
     // 現時点での重みの総和
     int weight_sum;
@@ -444,6 +446,8 @@ struct State {
         std::memset(used.data(), 0, sizeof(Rect) * 64 * 64 * 8);
         std::memset(used_bit.data(), 0, sizeof(uint64_t) * 4 * 128);
 
+        num_cands = 0;
+
         // 初期化だしナイーブに計算している
         update_next_point();
         update_cands();
@@ -465,7 +469,7 @@ struct State {
     }
 
     void update_cands() {
-        cands.clear();
+        num_cands = 0;
         for (int y = 1; y <= input->N; y++) {
             for (int x = 1; x <= input->N; x++) {
                 if (has_point[y][x]) continue;
@@ -473,11 +477,13 @@ struct State {
                 for (int dir = 0; dir < 8; dir++) {
                     auto [ok, rect] = check_p0(p0, dir);
                     if (!ok) continue;
-                    cands.emplace_back(dir, rect);
+                    cand_dirs[num_cands] = dir;
+                    cand_rects[num_cands] = rect;
+                    num_cands++;
                 }
             }
         }
-        chmax(max_cands, (int)cands.size());
+        chmax(max_cands, num_cands);
     }
 
     // 正規化？した得点の計算
@@ -730,6 +736,12 @@ struct State {
         return { true, {p0, p1, p2, p3} };
     }
 
+    void add_cand(int dir, Rect rect) {
+        cand_dirs[num_cands] = dir;
+        cand_rects[num_cands] = rect;
+        num_cands++;
+    }
+
     // p に印を追加したことで構成できるようになった長方形を調べる
     void add_cands(const Point& p) {
         for (int d = 0; d < 8; d++) {
@@ -737,31 +749,34 @@ struct State {
             Rect rect;
             std::tie(ok, rect) = check_p1(p, d);
             if (ok) {
-                cands.emplace_back(d, rect);
+                add_cand(d, rect);
             }
             std::tie(ok, rect) = check_p2(p, d);
             if (ok) {
-                cands.emplace_back(d, rect);
+                add_cand(d, rect);
             }
             std::tie(ok, rect) = check_p3(p, d);
             if (ok) {
-                cands.emplace_back(d, rect);
+                add_cand(d, rect);
             }
         }
-        chmax(max_cands, (int)cands.size());
+        chmax(max_cands, num_cands);
     }
 
     // invalid になった長方形を候補から除外する
     void remove_cands() {
         int new_size = 0;
-        for (int i = 0; i < (int)cands.size(); i++) {
-            const auto& [d, rect] = cands[i];
+        for (int i = 0; i < num_cands; i++) {
+            auto d = cand_dirs[i];
+            auto rect = cand_rects[i];
             if (has_point[rect[0].y][rect[0].x] || !check_p0(rect[0], d).first) {
                 continue;
             }
-            cands[new_size++] = cands[i];
+            cand_dirs[new_size] = cand_dirs[i];
+            cand_rects[new_size] = cand_rects[i];
+            new_size++;
         }
-        cands.erase(cands.begin() + new_size, cands.end());
+        num_cands = new_size;
     }
 
     // 印を追加する
@@ -932,17 +947,17 @@ struct State {
     // pred に従い次に選択すべき長方形を候補から貪欲に選択する
     template<typename F>
     std::pair<bool, Rect> choose_greedy(const F& pred) const {
-        if (cands.empty()) return { false, Rect() };
-        Rect best = cands.front().second;
-        for (int i = 1; i < (int)cands.size(); i++) {
-            if (!pred(best, cands[i].second)) best = cands[i].second;
+        if (!num_cands) return { false, Rect() };
+        Rect best = cand_rects[0];
+        for (int i = 1; i < num_cands; i++) {
+            if (!pred(best, cand_rects[i])) best = cand_rects[i];
         }
         return { true, best };
     }
 
     template<typename F>
     bool solve_greedy(const F& pred) {
-        while (!cands.empty()) {
+        while (num_cands) {
             auto [_, rect] = choose_greedy(pred);
             auto ok = apply_move(rect);
             if (!ok) return false;
@@ -1006,7 +1021,7 @@ Output solve(InputPtr input) {
             state = nstate;
             if (chmax(best_score, now_score)) {
                 best_state = state;
-                dump(best_score);
+                //dump(best_score);
             }
         }
         outer_loop++;
@@ -1026,7 +1041,7 @@ Output solve(InputPtr input) {
 // マルチテストケース実行
 void batch_test(int seed_begin = 0, int num_seed = 100, int step = 1) {
 
-    constexpr int batch_size = 8;
+    constexpr int batch_size = 5;
     const int block_size = batch_size * step;
     int seed_end = seed_begin + num_seed;
 
