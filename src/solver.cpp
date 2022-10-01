@@ -229,7 +229,7 @@ constexpr int sgn2dir[3][3] = {
     {3,2,1}
 };
 
-struct Point { // TODO: to int8_t
+struct Point {
     int8_t x, y;
     Point(int x = 0, int y = 0) : x(x), y(y) {}
     Point next(int dir) const { return { x + dx8[dir], y + dy8[dir] }; }
@@ -245,28 +245,6 @@ std::istream& operator>>(std::istream& in, Point& p) {
     p.x = x; p.y = y;
     return in;
 }
-
-struct Point2 {
-    union {
-        int8_t data[2];
-        uint16_t data16;
-    };
-    Point2() : data16(0) {}
-    Point2(uint16_t data16) : data16(data16) {}
-    Point2(int8_t x, int8_t y) {
-        data[0] = x; data[1] = y;
-    }
-    bool operator==(const Point2& rhs) const { return data16 == rhs.data16; }
-    bool operator!=(const Point2& rhs) const { return data16 != rhs.data16; }
-    bool operator<(const Point2& rhs) const { return data16 < rhs.data16; }
-    string stringify() const { return "[" + std::to_string(int(data[0]) - 1) + ", " + std::to_string(int(data[1]) - 1) + "]"; }
-};
-std::istream& operator>>(std::istream& in, Point2& p) {
-    in >> p.data[0] >> p.data[1];
-    return in;
-}
-
-//using Rect = array<Point, 4>;
 
 struct Rect {
     union {
@@ -375,9 +353,10 @@ struct Output {
     int score;
     double elapsed_ms;
     int max_cands;
+    int max_children;
 
-    Output(const vector<Rect>& rects, int score, int max_cands, double elapsed_ms = -1.0)
-        : rects(rects), score(score), elapsed_ms(elapsed_ms), max_cands(max_cands) {}
+    Output(const vector<Rect>& rects, int score, int max_cands, int max_children, double elapsed_ms)
+        : rects(rects), score(score), elapsed_ms(elapsed_ms), max_cands(max_cands), max_children(max_children) {}
 
     string stringify() const {
         string ans;
@@ -408,12 +387,12 @@ struct State {
 
     // ある点 p に印を付けて長方形 r を描画したとき
     // 1. r[1], r[2], r[3] は p よりも前に印を付けられていなければならない
-    // 2. p が他の長方形 r の辺上にあるとき、r[0] は p よりも前に印を付けられていなければならない（高々 2 つ)
+    // 2. p が他の長方形 r の辺上にあるとき、r[0] は p よりも前に印を付けられていなければならない
     array<array<vector<Rect>, 64>, 64> children;
     array<array<int, 64>, 64> num_parents;
-    array<array<array<Point, 5>, 64>, 64> parents;
+    array<array<array<Point, 5>, 64>, 64> parents; // 高々 5 つ
 
-    // (x,y) から d 方向に進んで初めて印に衝突する印
+    // (x,y) から d 方向に進んで初めて印に衝突する点
     array<array<array<Point, 64>, 64>, 8> next_point;
 
     array<array<array<Rect, 8>, 64>, 64> used;
@@ -431,6 +410,8 @@ struct State {
 
     // 現時点での重みの総和
     int weight_sum;
+
+    int max_cands = 0, max_children = 0;
 
     State(InputPtr input) : input(input), N(input->N) {
         // 外周は true
@@ -490,6 +471,7 @@ struct State {
                 }
             }
         }
+        chmax(max_cands, (int)cands.size());
     }
 
     // 正規化？した得点の計算
@@ -760,6 +742,7 @@ struct State {
                 cands.emplace_back(d, rect);
             }
         }
+        chmax(max_cands, (int)cands.size());
     }
 
     // invalid になった長方形を候補から除外する
@@ -801,6 +784,7 @@ struct State {
             auto [x, y] = rect[i];
             if (has_initial_point[y][x]) continue;
             children[y][x].push_back(rect);
+            chmax(max_children, (int)children[y][x].size());
             if (i) {
                 int& nump = num_parents[ny][nx];
                 parents[ny][nx][nump++] = { x, y };
@@ -813,6 +797,7 @@ struct State {
             if (r1.data64 && r1.data64 == r2.data64) {
                 auto [x, y] = r1[0];
                 children[y][x].push_back(rect);
+                chmax(max_children, (int)children[y][x].size());
                 int& nump = num_parents[ny][nx];
                 parents[ny][nx][nump++] = { x, y };
             }
@@ -937,7 +922,7 @@ struct State {
                 if (indeg[v] == 0) qu.push(v);
             }
         }
-        return Output(ans, eval(), -1, -1.0);
+        return Output(ans, eval(), -1, -1, -1.0);
     }
 
     // pred に従い次に選択すべき長方形を候補から貪欲に選択する
@@ -984,7 +969,7 @@ Output solve(InputPtr input) {
     };
 
     // 焼く
-    int outer_loop = 0;
+    int outer_loop = 0, max_cands = state.max_cands, max_children = state.max_children;
     constexpr double end_time = 4900;
     double start_time = timer.elapsed_ms(), now_time;
     while ((now_time = timer.elapsed_ms()) < end_time) {
@@ -998,6 +983,9 @@ Output solve(InputPtr input) {
             nstate.apply_move(rect);
         }
         int now_score = nstate.eval();
+
+        chmax(max_cands, nstate.max_cands);
+        chmax(max_children, nstate.max_children);
 
         int diff = now_score - prev_score;
         double temp = get_temp(10000.0, 0.0, now_time - start_time, end_time - start_time);
@@ -1016,6 +1004,8 @@ Output solve(InputPtr input) {
 
     auto output = best_state.create_output();
     output.elapsed_ms = timer.elapsed_ms();
+    output.max_cands = max_cands;
+    output.max_children = max_children;
 
     return output;
 }
@@ -1047,7 +1037,7 @@ void batch_test(int seed_begin = 0, int num_seed = 100, int step = 1) {
                 mtx.lock();
                 out << res;
                 scores[seed] = res.score;
-                cerr << format("seed=%d, score=%d, elapsed_ms=%f, max_cands=%d\n", seed, scores[seed], res.elapsed_ms, res.max_cands);
+                cerr << format("seed=%d, score=%d, elapsed_ms=%f, max_cands=%d, max_children=%d\n", seed, scores[seed], res.elapsed_ms, res.max_cands, res.max_children);
                 mtx.unlock();
             }
             });
@@ -1075,7 +1065,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     std::ostream& out = cout;
 #endif
 
-#if 0
+#if 1
     batch_test();
 #else
     auto input = std::make_shared<Input>(in);
