@@ -351,12 +351,13 @@ struct Output {
     // 以下に統計情報を追加してマルチテストケース実行時にサマリとして出力できるようにしている
 
     int score;
-    double elapsed_ms;
     int max_cands;
     int max_children;
+    int outer_loop;
+    double elapsed_ms;
 
-    Output(const vector<Rect>& rects, int score, int max_cands, int max_children, double elapsed_ms)
-        : rects(rects), score(score), elapsed_ms(elapsed_ms), max_cands(max_cands), max_children(max_children) {}
+    Output(const vector<Rect>& rects, int score, int max_cands, int max_children, int outer_loop, double elapsed_ms)
+        : rects(rects), score(score), max_cands(max_cands), max_children(max_children), outer_loop(outer_loop), elapsed_ms(elapsed_ms) {}
 
     string stringify() const {
         string ans;
@@ -388,7 +389,8 @@ struct State {
     // ある点 p に印を付けて長方形 r を描画したとき
     // 1. r[1], r[2], r[3] は p よりも前に印を付けられていなければならない
     // 2. p が他の長方形 r の辺上にあるとき、r[0] は p よりも前に印を付けられていなければならない
-    array<array<vector<Rect>, 64>, 64> children;
+    array<array<int, 64>, 64> num_children;
+    array<array<array<Rect, 16>, 64>, 64> children; // 16 個を超える場合は弾いてしまう
     array<array<int, 64>, 64> num_parents;
     array<array<array<Point, 5>, 64>, 64> parents; // 高々 5 つ
 
@@ -413,6 +415,7 @@ struct State {
 
     int max_cands = 0, max_children = 0;
 
+    State() {}
     State(InputPtr input) : input(input), N(input->N) {
         // 外周は true
         for (int y = 0; y < 64; y++) {
@@ -431,6 +434,9 @@ struct State {
             has_initial_point[y][x] = true;
             has_point[y][x] = true;
         }
+
+        std::memset(num_children.data(), 0, sizeof(int) * 64 * 64);
+        std::memset(children.data(), 0, sizeof(Rect) * 64 * 64 * 16);
 
         std::memset(num_parents.data(), 0, sizeof(int) * 64 * 64);
         std::memset(parents.data(), 0, sizeof(Point) * 64 * 64 * 5);
@@ -777,14 +783,16 @@ struct State {
         }
     }
 
-    void apply_move(const Rect& rect) {
+    bool apply_move(const Rect& rect) {
         add_point(rect[0]);
         auto [nx, ny] = rect[0];
         for (int i = 0; i < 4; i++) {
             auto [x, y] = rect[i];
             if (has_initial_point[y][x]) continue;
-            children[y][x].push_back(rect);
-            chmax(max_children, (int)children[y][x].size());
+            int& numc = num_children[y][x];
+            if (numc == 16) return false;
+            children[y][x][numc++] = rect;
+            chmax(max_children, numc);
             if (i) {
                 int& nump = num_parents[ny][nx];
                 parents[ny][nx][nump++] = { x, y };
@@ -796,8 +804,10 @@ struct State {
             auto r2 = used[ny][nx][dir ^ 4];
             if (r1.data64 && r1.data64 == r2.data64) {
                 auto [x, y] = r1[0];
-                children[y][x].push_back(rect);
-                chmax(max_children, (int)children[y][x].size());
+                int& numc = num_children[y][x];
+                if (numc == 16) return false;
+                children[y][x][numc++] = rect;
+                chmax(max_children, numc);
                 int& nump = num_parents[ny][nx];
                 parents[ny][nx][nump++] = { x, y };
             }
@@ -805,6 +815,7 @@ struct State {
         toggle_rect(rect);
         remove_cands();
         add_cands(rect[0]);
+        return true;
     }
 
     // 全ての点から削除しないといけない
@@ -812,7 +823,7 @@ struct State {
         auto [x, y] = p;
         assert(has_point[y][x] && !has_initial_point[y][x]);
         // 0 番目は自身なので最後に消す
-        for (int i = 1; i < children[y][x].size(); i++) {
+        for (int i = 1; i < num_children[y][x]; i++) {
             auto& rect = children[y][x][i];
             auto np = rect[0];
             auto [nx, ny] = np;
@@ -824,9 +835,15 @@ struct State {
         for (int i = 0; i < num_parents[y][x]; i++) {
             auto [px, py] = parents[y][x][i];
             auto& pcs = children[py][px];
-            auto it = std::find(pcs.begin(), pcs.end(), rect);
-            if (it != pcs.end()) {
-                pcs.erase(it);
+            int& numc = num_children[py][px];
+            for (int j = 0; j < numc; j++) {
+                if (pcs[j] == rect) {
+                    for (int k = j + 1; k < numc; k++) {
+                        pcs[k - 1] = pcs[k];
+                    }
+                    numc--;
+                    break;
+                }
             }
         }
         has_point[y][x] = false;
@@ -843,21 +860,8 @@ struct State {
         }
         toggle_rect(rect);
         rect.data64 = 0;
-        children[y][x].clear();
+        num_children[y][x] = 0;
         num_parents[y][x] = 0;
-    }
-
-    void remove_rect_naive(const Rect& rect) {
-        for (int y = 1; y <= input->N; y++) {
-            for (int x = 1; x <= input->N; x++) {
-                if (!has_point[y][x] || has_initial_point[y][x]) continue;
-                auto& cs = children[y][x];
-                auto it = std::find(cs.begin(), cs.end(), rect);
-                if (it != cs.end()) {
-                    cs.erase(it);
-                }
-            }
-        }
     }
 
     void remove_point(const Point& p) {
@@ -922,7 +926,7 @@ struct State {
                 if (indeg[v] == 0) qu.push(v);
             }
         }
-        return Output(ans, eval(), -1, -1, -1.0);
+        return Output(ans, eval(), -1, -1, -1, -1.0);
     }
 
     // pred に従い次に選択すべき長方形を候補から貪欲に選択する
@@ -934,6 +938,16 @@ struct State {
             if (!pred(best, cands[i].second)) best = cands[i].second;
         }
         return { true, best };
+    }
+
+    template<typename F>
+    bool solve_greedy(const F& pred) {
+        while (!cands.empty()) {
+            auto [_, rect] = choose_greedy(pred);
+            auto ok = apply_move(rect);
+            if (!ok) return false;
+        }
+        return true;
     }
 
 };
@@ -952,17 +966,17 @@ Output solve(InputPtr input) {
             < std::make_pair(perimeter(rhs), rnd.next_int());
     };
 
-    State state(input);
+    State init_state(input);
+
+    State state;
+    while (true) {
+        state = init_state;
+        bool ok = state.solve_greedy(f);
+        if (ok) break;
+    }
 
     State best_state(state);
     int best_score = best_state.eval();
-
-    // まずは貪欲
-    while (!state.cands.empty()) {
-        auto [ok, rect] = state.choose_greedy(f);
-        if (!ok) break;
-        state.apply_move(rect);
-    }
 
     auto get_temp = [](double startTemp, double endTemp, double t, double T) {
         return endTemp + (startTemp - endTemp) * (T - t) / T;
@@ -977,11 +991,8 @@ Output solve(InputPtr input) {
         auto nstate(state);
         int prev_score = nstate.eval();
         nstate.random_remove(rnd);
-        while (!nstate.cands.empty()) {
-            auto [ok, rect] = nstate.choose_greedy(f);
-            if (!ok) break;
-            nstate.apply_move(rect);
-        }
+        bool ok = nstate.solve_greedy(f);
+        if (!ok) continue;
         int now_score = nstate.eval();
 
         chmax(max_cands, nstate.max_cands);
@@ -995,17 +1006,18 @@ Output solve(InputPtr input) {
             state = nstate;
             if (chmax(best_score, now_score)) {
                 best_state = state;
-                //dump(best_score);
+                dump(best_score);
             }
         }
         outer_loop++;
     }
-    //dump(outer_loop);
+    dump(outer_loop);
 
     auto output = best_state.create_output();
     output.elapsed_ms = timer.elapsed_ms();
     output.max_cands = max_cands;
     output.max_children = max_children;
+    output.outer_loop = outer_loop;
 
     return output;
 }
@@ -1037,7 +1049,7 @@ void batch_test(int seed_begin = 0, int num_seed = 100, int step = 1) {
                 mtx.lock();
                 out << res;
                 scores[seed] = res.score;
-                cerr << format("seed=%d, score=%d, elapsed_ms=%f, max_cands=%d, max_children=%d\n", seed, scores[seed], res.elapsed_ms, res.max_cands, res.max_children);
+                cerr << format("seed=%d, score=%d, max_cands=%d, max_children=%d, outer_loop=%d, elapsed_ms=%f\n", seed, scores[seed], res.max_cands, res.max_children, res.outer_loop, res.elapsed_ms);
                 mtx.unlock();
             }
             });
@@ -1056,8 +1068,8 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
 #endif
 
 #ifdef _MSC_VER
-    std::ifstream ifs(R"(tools_win\in\0000.txt)");
-    std::ofstream ofs(R"(tools_win\out\0000.txt)");
+    std::ifstream ifs(R"(tools_win\in\0005.txt)");
+    std::ofstream ofs(R"(tools_win\out\0005.txt)");
     std::istream& in = ifs;
     std::ostream& out = ofs;
 #else
@@ -1065,7 +1077,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     std::ostream& out = cout;
 #endif
 
-#if 1
+#if 0
     batch_test();
 #else
     auto input = std::make_shared<Input>(in);
