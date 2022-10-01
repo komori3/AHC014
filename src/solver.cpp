@@ -391,9 +391,6 @@ struct State {
     // ある点 p に印を付けて長方形 r を描画したとき
     // 1. r[1], r[2], r[3] は p よりも前に印を付けられていなければならない
     // 2. p が他の長方形 r の辺上にあるとき、r[0] は p よりも前に印を付けられていなければならない
-
-    array<array<Rect, 64>, 64> p2r; // point to rect
-
     array<array<int, 64>, 64> num_children;
     array<array<array<Rect, 16>, 64>, 64> children; // 16 個を超える場合は弾いてしまう
     array<array<int, 64>, 64> num_parents;
@@ -422,20 +419,6 @@ struct State {
 
     State() {}
     State(InputPtr input) : input(input), N(input->N) {
-
-        //dump(sizeof(State));
-        //dump(sizeof(has_point));
-        //dump(sizeof(num_children));
-        //dump(sizeof(children));
-        //dump(sizeof(num_parents));
-        //dump(sizeof(parents));
-        //dump(sizeof(next_point));
-        //dump(sizeof(used));
-        //dump(sizeof(used_bit));
-        //dump(sizeof(cand_dirs));
-        //dump(sizeof(cand_rects));
-        //exit(1);
-
         // 外周は true
         for (int y = 0; y < 64; y++) {
             for (int x = 0; x < 64; x++) {
@@ -450,8 +433,6 @@ struct State {
         for (const auto& [x, y] : input->ps) {
             has_point[y][x] = true;
         }
-
-        std::memset(p2r.data(), 0, sizeof(Rect) * 64 * 64);
 
         std::memset(num_children.data(), 0, sizeof(int) * 64 * 64);
         std::memset(children.data(), 0, sizeof(Rect) * 64 * 64 * 16);
@@ -674,7 +655,7 @@ struct State {
         if (!is_inside(p3)) return 0;
 
         Point p0(p1.x + p3.x - p2.x, p1.y + p3.y - p2.y);
-        if (!is_inside(p0) | has_point[p0.y][p0.x]) return 0;
+        if (!is_inside(p0) || has_point[p0.y][p0.x]) return 0;
         // p0->p1, p0->p3 間に印はない
         {
             auto [x, y] = p0.next(d);
@@ -785,11 +766,10 @@ struct State {
 
     // 印を追加する
     // weight_sum, next_point の更新も行う
-    void add_point(const Rect& rect) {
-        auto [x, y] = rect[0];
+    void add_point(const Point& p) {
+        auto [x, y] = p;
         has_point[y][x] = true;
-        p2r[y][x] = rect;
-        weight_sum += input->ws[y][x];
+        weight_sum += input->ws[p.y][p.x];
         for (int d = 0; d < 8; d++) {
             next_point[d][y][x] = { x, y };
             int rd = d ^ 4;
@@ -804,14 +784,16 @@ struct State {
 
     bool update_dependencies(const Rect& rect) {
         auto [nx, ny] = rect[0];
-        for (int i = 1; i < 4; i++) {
+        for (int i = 0; i < 4; i++) {
             auto [x, y] = rect[i];
             if (input->has_initial_point[y][x]) continue;
             int& numc = num_children[y][x];
             if (numc == 16) return false;
             children[y][x][numc++] = rect;
-            int& nump = num_parents[ny][nx];
-            parents[ny][nx][nump++] = { x, y };
+            if (i) {
+                int& nump = num_parents[ny][nx];
+                parents[ny][nx][nump++] = { x, y };
+            }
         }
         // 点が他の長方形の辺上にある
         for (int dir = 0; dir < 4; dir++) {
@@ -830,7 +812,7 @@ struct State {
     }
 
     bool apply_move(const Rect& rect) {
-        add_point(rect);
+        add_point(rect[0]);
         if (!update_dependencies(rect)) return false;
         toggle_rect(rect);
         remove_cands();
@@ -841,7 +823,8 @@ struct State {
     // 全ての点から削除しないといけない
     void remove_point_dfs(const Point& p) {
         auto [x, y] = p;
-        for (int i = 0; i < num_children[y][x]; i++) {
+        // 0 番目は自身なので最後に消す
+        for (int i = 1; i < num_children[y][x]; i++) {
             auto& rect = children[y][x][i];
             auto np = rect[0];
             auto [nx, ny] = np;
@@ -849,7 +832,7 @@ struct State {
             if (nx == 0 || !has_point[ny][nx] || input->has_initial_point[ny][nx]) continue;
             remove_point_dfs(np);
         }
-        auto& rect = p2r[y][x];
+        auto& rect = children[y][x][0];
         for (int i = 0; i < num_parents[y][x]; i++) {
             auto [px, py] = parents[y][x][i];
             auto& pcs = children[py][px];
@@ -907,7 +890,7 @@ struct State {
         for (int y = 1; y <= input->N; y++) {
             for (int x = 1; x <= input->N; x++) {
                 if (!has_point[y][x] || input->has_initial_point[y][x]) continue;
-                auto u = p2r[y][x].data64;
+                auto u = children[y][x][0].data64;
                 r2i[u] = i2r.size();
                 i2r.push_back(u);
             }
@@ -918,11 +901,10 @@ struct State {
         for (int y = 1; y <= input->N; y++) {
             for (int x = 1; x <= input->N; x++) {
                 if (!has_point[y][x] || input->has_initial_point[y][x]) continue;
-                auto u64 = p2r[y][x].data64;
+                auto u64 = children[y][x][0].data64;
                 auto u = r2i[u64];
-                for (int i = 0; i < num_children[y][x]; i++) {
-                    auto rect = children[y][x][i];
-                    auto v64 = rect.data64;
+                for (int i = 1; i < num_children[y][x]; i++) {
+                    auto v64 = children[y][x][i].data64;
                     auto v = r2i[v64];
                     graph[u].push_back(v);
                     indeg[v]++;
@@ -985,7 +967,7 @@ Output solve(InputPtr input) {
 
     State init_state(input);
 
-    State state, nstate;
+    State state;
     while (true) {
         state = init_state;
         bool ok = state.solve_greedy(f);
@@ -1001,12 +983,11 @@ Output solve(InputPtr input) {
 
     // 焼く
     int outer_loop = 0;
-    constexpr double end_time = 4900;
+    constexpr double end_time = 19900;
     double start_time = timer.elapsed_ms(), now_time;
     while ((now_time = timer.elapsed_ms()) < end_time) {
 
-        //memcpy(&nstate, &state, sizeof(State));
-        nstate = state;
+        auto nstate(state);
         int prev_score = nstate.eval();
         nstate.random_remove(rnd);
         bool ok = nstate.solve_greedy(f);
@@ -1014,21 +995,19 @@ Output solve(InputPtr input) {
         int now_score = nstate.eval();
 
         int diff = now_score - prev_score;
-        double temp = get_temp(10000.0, 0.0, now_time - start_time, end_time - start_time);
+        double temp = get_temp(20000.0, 0.0, now_time - start_time, end_time - start_time);
         double prob = exp(diff / temp);
 
         if (rnd.next_double() < prob) {
-            //memcpy(&state, &nstate, sizeof(State));
             state = nstate;
             if (chmax(best_score, now_score)) {
-                //memcpy(&best_state, &state, sizeof(State));
                 best_state = state;
                 dump(best_score);
             }
         }
         outer_loop++;
     }
-    //dump(outer_loop);
+    dump(outer_loop);
 
     auto output = best_state.create_output();
     output.elapsed_ms = timer.elapsed_ms();
@@ -1083,8 +1062,8 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
 #endif
 
 #ifdef _MSC_VER
-    std::ifstream ifs(R"(tools_win\in\0005.txt)");
-    std::ofstream ofs(R"(tools_win\out\0005.txt)");
+    std::ifstream ifs(R"(tools_win\in\0000.txt)");
+    std::ofstream ofs(R"(tools_win\out\0000.txt)");
     std::istream& in = ifs;
     std::ostream& out = ofs;
 #else
