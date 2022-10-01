@@ -469,12 +469,13 @@ struct State {
         num_cands = 0;
         for (int y = 1; y <= input->N; y++) {
             for (int x = 1; x <= input->N; x++) {
-                if (has_point[y][x]) continue;
-                Point p0(x, y);
-                for (int dir = 0; dir < 8; dir++) {
-                    auto rect = check_p0(p0, dir);
+                if (!has_point[y][x]) continue;
+                Point p(x, y);
+                for (int d = 0; d < 8; d++) {
+                    Rect rect;
+                    rect = check_p1(p, d);
                     if (!rect.data64) continue;
-                    cand_dirs[num_cands] = dir;
+                    cand_dirs[num_cands] = d;
                     cand_rects[num_cands] = rect;
                     num_cands++;
                 }
@@ -1009,7 +1010,7 @@ Output solve(InputPtr input) {
         }
         outer_loop++;
     }
-    dump(outer_loop);
+    //dump(outer_loop);
 
     auto output = best_state.create_output();
     output.elapsed_ms = timer.elapsed_ms();
@@ -1064,8 +1065,8 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
 #endif
 
 #ifdef _MSC_VER
-    std::ifstream ifs(R"(tools_win\in\0005.txt)");
-    std::ofstream ofs(R"(tools_win\out\0005.txt)");
+    std::ifstream ifs(R"(tools_win\in\0000.txt)");
+    std::ofstream ofs(R"(tools_win\out\0000.txt)");
     std::istream& in = ifs;
     std::ostream& out = ofs;
 #else
