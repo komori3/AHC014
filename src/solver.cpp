@@ -244,6 +244,26 @@ std::istream& operator>>(std::istream& in, Point& p) {
     return in;
 }
 
+struct Point2 {
+    union {
+        int8_t data[2];
+        uint16_t data16;
+    };
+    Point2() : data16(0) {}
+    Point2(uint16_t data16) : data16(data16) {}
+    Point2(int8_t x, int8_t y) {
+        data[0] = x; data[1] = y;
+    }
+    bool operator==(const Point2& rhs) const { return data16 == rhs.data16; }
+    bool operator!=(const Point2& rhs) const { return data16 != rhs.data16; }
+    bool operator<(const Point2& rhs) const { return data16 < rhs.data16; }
+    string stringify() const { return "[" + std::to_string(int(data[0]) - 1) + ", " + std::to_string(int(data[1]) - 1) + "]"; }
+};
+std::istream& operator>>(std::istream& in, Point2& p) {
+    in >> p.data[0] >> p.data[1];
+    return in;
+}
+
 //using Rect = array<Point, 4>;
 
 struct Rect {
@@ -258,6 +278,12 @@ struct Rect {
         data[2] = p1.x; data[3] = p1.y;
         data[4] = p2.x; data[5] = p2.y;
         data[6] = p3.x; data[7] = p3.y;
+    }
+    bool operator==(const Rect& rhs) const {
+        return data64 == rhs.data64;
+    }
+    bool operator<(const Rect& rhs) const {
+        return data64 < rhs.data64;
     }
     Point operator[](int i) const {
         return { data[i << 1], data[(i << 1) + 1] };
@@ -365,6 +391,8 @@ struct Output {
     }
 };
 
+int debug_count = 0;
+
 struct State;
 using StatePtr = std::shared_ptr<State>;
 struct State {
@@ -379,8 +407,7 @@ struct State {
     // ある点 p に印を付けて長方形 r を描画したとき
     // 1. r[1], r[2], r[3] は p よりも前に印を付けられていなければならない
     // 2. p が他の長方形 r の辺上にあるとき、r[0] は p よりも前に印を付けられていなければならない（高々 2 つ)
-    array<array<int, 64>, 64> num_children;
-    array<array<array<Rect, 32>, 64>, 64> children;
+    array<array<vector<Rect>, 64>, 64> children;
 
     // (x,y) から d 方向に進んで初めて印に衝突する印
     array<array<array<Point, 64>, 64>, 8> next_point;
@@ -419,9 +446,6 @@ struct State {
             has_initial_point[y][x] = true;
             has_point[y][x] = true;
         }
-
-        std::memset(num_children.data(), 0, sizeof(int) * 64 * 64);
-        std::memset(children.data(), 0, sizeof(Rect) * 64 * 64 * 4);
 
         std::memset(used.data(), 0, sizeof(Rect) * 64 * 64 * 8);
         std::memset(used_bit.data(), 0, sizeof(uint64_t) * 4 * 128);
@@ -754,11 +778,11 @@ struct State {
         for (int d = 0; d < 8; d++) {
             next_point[d][y][x] = { x, y };
             int rd = d ^ 4;
-            int nx = x + dx8[rd], ny = y + dy8[rd];
+            int nx = x - dx8[d], ny = y - dy8[d];
             while (!has_point[ny][nx]) {
                 next_point[d][ny][nx] = { x, y };
-                nx += dx8[rd];
-                ny += dy8[rd];
+                nx -= dx8[d];
+                ny -= dy8[d];
             }
         }
     }
@@ -769,18 +793,14 @@ struct State {
         for (int i = 0; i < 4; i++) {
             auto [x, y] = rect[i];
             if (has_initial_point[y][x]) continue;
-            auto& nc = num_children[y][x];
-            children[y][x][nc++] = rect;
-            assert(nc <= 32);
+            children[y][x].push_back(rect);
         }
         for (int dir = 0; dir < 4; dir++) {
             auto r1 = used[ny][nx][dir];
             auto r2 = used[ny][nx][dir ^ 4];
             if (r1.data64 && r1.data64 == r2.data64) {
                 auto [x, y] = r1[0];
-                auto& nc = num_children[y][x];
-                children[y][x][nc++] = rect;
-                assert(nc <= 32);
+                children[y][x].push_back(rect);
             }
         }
         toggle_rect(rect);
@@ -793,7 +813,7 @@ struct State {
         auto [x, y] = p;
         assert(has_point[y][x] && !has_initial_point[y][x]);
         // 0 番目は自身なので最後に消す
-        for (int i = 1; i < num_children[y][x]; i++) {
+        for (int i = 1; i < children[y][x].size(); i++) {
             auto& rect = children[y][x][i];
             auto np = rect[0];
             auto [nx, ny] = np;
@@ -805,25 +825,29 @@ struct State {
         del.push_back(rect);
         has_point[y][x] = false;
         weight_sum -= input->ws[y][x];
+        for (int d = 0; d < 8; d++) {
+            int tx = x, ty = y;
+            while (!has_point[ty][tx]) tx += dx8[d], ty += dy8[d];
+            int nx = tx - dx8[d], ny = ty - dy8[d];
+            while (!has_point[ny][nx]) {
+                next_point[d][ny][nx] = { tx, ty };
+                nx -= dx8[d];
+                ny -= dy8[d];
+            }
+        }
         toggle_rect(rect);
         rect.data64 = 0;
-        num_children[y][x] = 0;
+        children[y][x].clear();
     }
 
     void remove_rect_naive(const Rect& rect) {
         for (int y = 1; y <= input->N; y++) {
             for (int x = 1; x <= input->N; x++) {
                 if (!has_point[y][x] || has_initial_point[y][x]) continue;
-                auto& numc = num_children[y][x];
-                for (int i = 0; i < numc; i++) {
-                    if (rect.data64 == children[y][x][i].data64) {
-                        for (int j = i + 1; j < numc; j++) {
-                            children[y][x][j - 1] = children[y][x][j];
-                        }
-                        children[y][x][numc - 1].data64 = 0;
-                        numc--;
-                        break;
-                    }
+                auto& cs = children[y][x];
+                auto it = std::find(cs.begin(), cs.end(), rect);
+                if (it != cs.end()) {
+                    cs.erase(it);
                 }
             }
         }
@@ -835,8 +859,6 @@ struct State {
         for (const auto& r : del) {
             remove_rect_naive(r);
         }
-        // update next_point, cands
-        update_next_point();
         update_cands();
     }
 
@@ -874,8 +896,7 @@ struct State {
                 if (!has_point[y][x] || has_initial_point[y][x]) continue;
                 auto u64 = children[y][x][0].data64;
                 auto u = r2i[u64];
-                auto numc = num_children[y][x];
-                for (int i = 1; i < numc; i++) {
+                for (int i = 1; i < children[y][x].size(); i++) {
                     auto v64 = children[y][x][i].data64;
                     auto v = r2i[v64];
                     graph[u].push_back(v);
@@ -930,35 +951,52 @@ Output solve(InputPtr input) {
 
     State state(input);
 
+    State best_state(state);
+    int best_score = best_state.eval();
+
     // まずは貪欲
     while (!state.cands.empty()) {
         auto [ok, rect] = state.choose_greedy(f);
         if (!ok) break;
         state.apply_move(rect);
     }
-    int best_score = state.eval();
-    dump(best_score);
 
-    // 山を登る
+    auto get_temp = [](double startTemp, double endTemp, double t, double T) {
+        return endTemp + (startTemp - endTemp) * (T - t) / T;
+    };
+
+    // 焼く
     int outer_loop = 0;
-    constexpr int timelimit = 4900;
-    while (timer.elapsed_ms() < timelimit) {
+    constexpr double end_time = 4900;
+    double start_time = timer.elapsed_ms(), now_time;
+    while ((now_time = timer.elapsed_ms()) < end_time) {
+
         auto nstate(state);
+        int prev_score = nstate.eval();
         nstate.random_remove(rnd);
         while (!nstate.cands.empty()) {
             auto [ok, rect] = nstate.choose_greedy(f);
             if (!ok) break;
             nstate.apply_move(rect);
         }
-        if (chmax(best_score, nstate.eval())) {
+        int now_score = nstate.eval();
+
+        int diff = now_score - prev_score;
+        double temp = get_temp(50.0, 0.0, now_time - start_time, end_time - start_time);
+        double prob = exp(diff / temp);
+
+        if (rnd.next_double() < prob) {
             state = nstate;
-            dump(best_score);
+            if (chmax(best_score, now_score)) {
+                best_state = state;
+                dump(best_score);
+            }
         }
         outer_loop++;
     }
     dump(outer_loop);
 
-    auto output = state.create_output();
+    auto output = best_state.create_output();
     output.elapsed_ms = timer.elapsed_ms();
 
     return output;
