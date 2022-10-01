@@ -311,11 +311,12 @@ struct Input;
 using InputPtr = std::shared_ptr<Input>;
 struct Input {
 
-    int N;                  // 盤面サイズ (31~61 の奇数)
-    vector<Point> ps;       // 印の初期配置
-    int S;                  // 盤面全体の重みの総和
-    int Q;                  // 印の初期配置の重みの総和
-    vector<vector<int>> ws; // 重みをメモした二次元配列
+    int N;                          // 盤面サイズ (31~61 の奇数)
+    vector<Point> ps;               // 印の初期配置
+    int S;                          // 盤面全体の重みの総和
+    int Q;                          // 印の初期配置の重みの総和
+    array<array<int, 64>, 64> ws;   // 重みをメモした二次元配列
+    array<array<bool, 64>, 64> has_initial_point;
 
     Input(std::istream& in) {
         int M;
@@ -323,13 +324,17 @@ struct Input {
         ps.resize(M);
         in >> ps;
         S = Q = 0;
-        ws.resize(N + 2, vector<int>(N + 2, -1));
+        memset(ws.data(), -1, sizeof(int) * 64 * 64);
+        memset(has_initial_point.data(), 0, sizeof(bool) * 64 * 64);
         for (int y = 0; y < N; y++) for (int x = 0; x < N; x++) {
             ws[y + 1][x + 1] = weight(x, y);
             S += ws[y + 1][x + 1];
         }
         for (const auto& [x, y] : ps) Q += ws[y + 1][x + 1];
-        for (auto& [x, y] : ps) x++, y++;
+        for (auto& [x, y] : ps) {
+            x++, y++;
+            has_initial_point[y][x] = true;
+        }
     }
 
     inline int weight(int x, int y) const {
@@ -351,13 +356,11 @@ struct Output {
     // 以下に統計情報を追加してマルチテストケース実行時にサマリとして出力できるようにしている
 
     int score;
-    int max_cands;
-    int max_children;
     int outer_loop;
     double elapsed_ms;
 
-    Output(const vector<Rect>& rects, int score, int max_cands, int max_children, int outer_loop, double elapsed_ms)
-        : rects(rects), score(score), max_cands(max_cands), max_children(max_children), outer_loop(outer_loop), elapsed_ms(elapsed_ms) {}
+    Output(const vector<Rect>& rects, int score, int outer_loop, double elapsed_ms)
+        : rects(rects), score(score), outer_loop(outer_loop), elapsed_ms(elapsed_ms) {}
 
     string stringify() const {
         string ans;
@@ -383,7 +386,6 @@ struct State {
     int N;
 
     // 外周は印が付いているとする TODO: uint64_t?
-    array<array<bool, 64>, 64> has_initial_point; // TODO: input に回していい
     array<array<bool, 64>, 64> has_point;
 
     // ある点 p に印を付けて長方形 r を描画したとき
@@ -415,25 +417,20 @@ struct State {
     // 現時点での重みの総和
     int weight_sum;
 
-    int max_cands = 0, max_children = 0;
-
     State() {}
     State(InputPtr input) : input(input), N(input->N) {
         // 外周は true
         for (int y = 0; y < 64; y++) {
             for (int x = 0; x < 64; x++) {
-                has_initial_point[y][x] = true;
                 has_point[y][x] = true;
             }
         }
         for (int y = 1; y <= N; y++) {
             for (int x = 1; x <= N; x++) {
-                has_initial_point[y][x] = false;
                 has_point[y][x] = false;
             }
         }
         for (const auto& [x, y] : input->ps) {
-            has_initial_point[y][x] = true;
             has_point[y][x] = true;
         }
 
@@ -475,15 +472,14 @@ struct State {
                 if (has_point[y][x]) continue;
                 Point p0(x, y);
                 for (int dir = 0; dir < 8; dir++) {
-                    auto [ok, rect] = check_p0(p0, dir);
-                    if (!ok) continue;
+                    auto rect = check_p0(p0, dir);
+                    if (!rect.data64) continue;
                     cand_dirs[num_cands] = dir;
                     cand_rects[num_cands] = rect;
                     num_cands++;
                 }
             }
         }
-        chmax(max_cands, num_cands);
     }
 
     // 正規化？した得点の計算
@@ -609,131 +605,130 @@ struct State {
         return false;
     }
 
-    std::pair<bool, Rect> check_p0(const Point& p0, int d) const {
-        assert(!has_point[p0.y][p0.x]);
-        int nd = (d + 2) & 7;
+    Rect check_p0(const Point& p0, int d) const {
         // p0 から dir0, dir1 方向に進んで初めて衝突する印を p1, p3 とする
         // p1 から dir1 方向に伸ばした半直線と p3 から dir0 方向に伸ばした半直線の交点を p2 とする
 
         // 1. p1, p3 は印が付いていて、外周ではない
         Point p1 = next_point[d][p0.y][p0.x];
-        if (!is_inside(p1)) return { 0, {} };
-        assert(has_point[p1.y][p1.x]);
+        if (!is_inside(p1)) return 0;
+
+        int nd = (d + 2) & 7;
+
         Point p3 = next_point[nd][p0.y][p0.x];
-        if (!is_inside(p3)) return { 0, {} };
-        assert(has_point[p3.y][p3.x]);
+        if (!is_inside(p3)) return 0;
 
         // 2. p2 に印が付いている
         Point p2(p1.x + p3.x - p0.x, p1.y + p3.y - p0.y);
-        if (!is_inside(p2) || !has_point[p2.y][p2.x]) return { 0, {} };
+        if (!is_inside(p2) || !has_point[p2.y][p2.x]) return 0;
 
         // 3. 線分 p1-p2, p3-p2 (境界含まない) 上に印は存在してはいけない
         {
             // p1 から p2 方向に進んで初めてぶつかる印は p2 でなければならない
             auto [x, y] = p1.next(nd);
-            if (next_point[nd][y][x] != p2) return { 0, {} };
+            if (next_point[nd][y][x] != p2) return 0;
         }
         {
             // p3 から p2 方向に進んで初めてぶつかる印は p2 でなければならない
             auto [x, y] = p3.next(d);
-            if (next_point[d][y][x] != p2) return { 0, {} };
+            if (next_point[d][y][x] != p2) return 0;
         }
 
         // 4. 他の長方形との共通部分は存在してはいけない
         Rect rect{ p0, p1, p2, p3 };
-        if (is_overlapped(rect)) return { 0, {} };
+        if (is_overlapped(rect)) return 0;
 
-        return { input->ws[p0.y][p0.x], rect };
+        return rect;
     }
 
-    std::pair<bool, Rect> check_p1(const Point& p1, int d) const {
+    Rect check_p1(const Point& p1, int d) const {
         int nd = (d + 2) & 7;
         Point p2;
         {
             auto [x, y] = p1.next(nd);
             p2 = next_point[nd][y][x];
-            if (!is_inside(p2)) return { false, {} };
+            if (!is_inside(p2)) return 0;
         }
         nd = (nd + 2) & 7;
         Point p3;
         {
             auto [x, y] = p2.next(nd);
             p3 = next_point[nd][y][x];
-            if (!is_inside(p3)) return { false, {} };
+            if (!is_inside(p3)) return 0;
         }
         Point p0(p1.x + p3.x - p2.x, p1.y + p3.y - p2.y);
-        if (!is_inside(p0) || has_point[p0.y][p0.x]) return { false, {} };
+        if (!is_inside(p0) || has_point[p0.y][p0.x]) return 0;
         // p0->p1, p0->p3 間に印はない
         {
             auto [x, y] = p0.next(d);
-            if (next_point[d][y][x] != p1) return { false, {} };
+            if (next_point[d][y][x] != p1) return 0;
         }
         {
             auto [x, y] = p0.next((d + 2) & 7);
-            if (next_point[(d + 2) & 7][y][x] != p3) return { false, {} };
+            if (next_point[(d + 2) & 7][y][x] != p3) return 0;
         }
-        if (is_overlapped({ p0, p1, p2, p3 })) return { false, {} };
-        return { true, {p0, p1, p2, p3} };
+        if (is_overlapped({ p0, p1, p2, p3 })) return 0;
+        return {p0, p1, p2, p3};
     }
 
-    std::pair<bool, Rect> check_p2(const Point& p2, int d) const {
+    Rect check_p2(const Point& p2, int d) const {
         int nd = (d + 4) & 7;
         Point p3;
         {
             auto [x, y] = p2.next(nd);
             p3 = next_point[nd][y][x];
-            if (!is_inside(p3)) return { false, {} };
+            if (!is_inside(p3)) return 0;
         }
         nd = (nd + 2) & 7;
         Point p1;
         {
             auto [x, y] = p2.next(nd);
             p1 = next_point[nd][y][x];
-            if (!is_inside(p1)) return { false, {} };
+            if (!is_inside(p1)) return 0;
         }
         Point p0(p1.x + p3.x - p2.x, p1.y + p3.y - p2.y);
-        if (!is_inside(p0) || has_point[p0.y][p0.x]) return { false, {} };
+        if (!is_inside(p0) || has_point[p0.y][p0.x]) return 0;
         // p0->p1, p0->p3 間に印はない
         {
             auto [x, y] = p0.next(d);
-            if (next_point[d][y][x] != p1) return { false, {} };
+            if (next_point[d][y][x] != p1) return 0;
         }
         {
             auto [x, y] = p0.next((d + 2) & 7);
-            if (next_point[(d + 2) & 7][y][x] != p3) return { false, {} };
+            if (next_point[(d + 2) & 7][y][x] != p3) return 0;
         }
-        if (is_overlapped({ p0, p1, p2, p3 })) return { false, {} };
-        return { true, {p0, p1, p2, p3} };
+        if (is_overlapped({ p0, p1, p2, p3 })) return 0;
+        return {p0, p1, p2, p3};
     }
 
-    std::pair<bool, Rect> check_p3(const Point& p3, int d) {
+    Rect check_p3(const Point& p3, int d) {
         int nd = d;
         Point p2;
         {
             auto [x, y] = p3.next(nd);
             p2 = next_point[nd][y][x];
-            if (!is_inside(p2)) return { false, {} };
+            if (!is_inside(p2)) return 0;
         }
         nd = (nd + 6) & 7;
         Point p1;
         {
             auto [x, y] = p2.next(nd);
             p1 = next_point[nd][y][x];
-            if (!is_inside(p1)) return { false, {} };
+            if (!is_inside(p1)) return 0;
         }
         Point p0(p3.x + p1.x - p2.x, p3.y + p1.y - p2.y);
-        if (!is_inside(p0) || has_point[p0.y][p0.x]) return { false, {} };
+        if (!is_inside(p0) || has_point[p0.y][p0.x]) return 0;
         // p0->p1, p0->p3 間に印はない
         {
             auto [x, y] = p0.next(d);
-            if (next_point[d][y][x] != p1) return { false, {} };
+            if (next_point[d][y][x] != p1) return 0;
         }
         {
             auto [x, y] = p0.next((d + 2) & 7);
-            if (next_point[(d + 2) & 7][y][x] != p3) return { false, {} };
+            if (next_point[(d + 2) & 7][y][x] != p3) return 0;
         }
-        if (is_overlapped({ p0, p1, p2, p3 })) return { false, {} };
-        return { true, {p0, p1, p2, p3} };
+        if (is_overlapped({ p0, p1, p2, p3 })) return 0;
+        return {p0, p1, p2, p3};
     }
 
     void add_cand(int dir, Rect rect) {
@@ -745,22 +740,14 @@ struct State {
     // p に印を追加したことで構成できるようになった長方形を調べる
     void add_cands(const Point& p) {
         for (int d = 0; d < 8; d++) {
-            bool ok;
             Rect rect;
-            std::tie(ok, rect) = check_p1(p, d);
-            if (ok) {
-                add_cand(d, rect);
-            }
-            std::tie(ok, rect) = check_p2(p, d);
-            if (ok) {
-                add_cand(d, rect);
-            }
-            std::tie(ok, rect) = check_p3(p, d);
-            if (ok) {
-                add_cand(d, rect);
-            }
+            rect = check_p1(p, d);
+            if (rect.data64) add_cand(d, rect);
+            rect = check_p2(p, d);
+            if (rect.data64) add_cand(d, rect);
+            rect = check_p3(p, d);
+            if (rect.data64) add_cand(d, rect);
         }
-        chmax(max_cands, num_cands);
     }
 
     // invalid になった長方形を候補から除外する
@@ -769,7 +756,7 @@ struct State {
         for (int i = 0; i < num_cands; i++) {
             auto d = cand_dirs[i];
             auto rect = cand_rects[i];
-            if (has_point[rect[0].y][rect[0].x] || !check_p0(rect[0], d).first) {
+            if (has_point[rect[0].y][rect[0].x] || !check_p0(rect[0], d).data64) {
                 continue;
             }
             cand_dirs[new_size] = cand_dirs[i];
@@ -783,7 +770,6 @@ struct State {
     // weight_sum, next_point の更新も行う
     void add_point(const Point& p) {
         auto [x, y] = p;
-        assert(!has_point[y][x]);
         has_point[y][x] = true;
         weight_sum += input->ws[p.y][p.x];
         for (int d = 0; d < 8; d++) {
@@ -798,16 +784,14 @@ struct State {
         }
     }
 
-    bool apply_move(const Rect& rect) {
-        add_point(rect[0]);
+    bool update_dependencies(const Rect& rect) {
         auto [nx, ny] = rect[0];
         for (int i = 0; i < 4; i++) {
             auto [x, y] = rect[i];
-            if (has_initial_point[y][x]) continue;
+            if (input->has_initial_point[y][x]) continue;
             int& numc = num_children[y][x];
             if (numc == 16) return false;
             children[y][x][numc++] = rect;
-            chmax(max_children, numc);
             if (i) {
                 int& nump = num_parents[ny][nx];
                 parents[ny][nx][nump++] = { x, y };
@@ -822,11 +806,16 @@ struct State {
                 int& numc = num_children[y][x];
                 if (numc == 16) return false;
                 children[y][x][numc++] = rect;
-                chmax(max_children, numc);
                 int& nump = num_parents[ny][nx];
                 parents[ny][nx][nump++] = { x, y };
             }
         }
+        return true;
+    }
+
+    bool apply_move(const Rect& rect) {
+        add_point(rect[0]);
+        if (!update_dependencies(rect)) return false;
         toggle_rect(rect);
         remove_cands();
         add_cands(rect[0]);
@@ -836,14 +825,13 @@ struct State {
     // 全ての点から削除しないといけない
     void remove_point_dfs(const Point& p) {
         auto [x, y] = p;
-        assert(has_point[y][x] && !has_initial_point[y][x]);
         // 0 番目は自身なので最後に消す
         for (int i = 1; i < num_children[y][x]; i++) {
             auto& rect = children[y][x][i];
             auto np = rect[0];
             auto [nx, ny] = np;
             rect.data64 = 0;
-            if (nx == 0 || !has_point[ny][nx] || has_initial_point[ny][nx]) continue;
+            if (nx == 0 || !has_point[ny][nx] || input->has_initial_point[ny][nx]) continue;
             remove_point_dfs(np);
         }
         auto& rect = children[y][x][0];
@@ -888,7 +876,7 @@ struct State {
         vector<Point> ps;
         for (int y = 1; y <= input->N; y++) {
             for (int x = 1; x <= input->N; x++) {
-                if (has_point[y][x] && !has_initial_point[y][x]) {
+                if (has_point[y][x] && !input->has_initial_point[y][x]) {
                     ps.emplace_back(x, y);
                 }
             }
@@ -903,9 +891,8 @@ struct State {
         vector<uint64_t> i2r;
         for (int y = 1; y <= input->N; y++) {
             for (int x = 1; x <= input->N; x++) {
-                if (!has_point[y][x] || has_initial_point[y][x]) continue;
+                if (!has_point[y][x] || input->has_initial_point[y][x]) continue;
                 auto u = children[y][x][0].data64;
-                assert(!r2i.count(u));
                 r2i[u] = i2r.size();
                 i2r.push_back(u);
             }
@@ -915,7 +902,7 @@ struct State {
         vector<int> indeg(V);
         for (int y = 1; y <= input->N; y++) {
             for (int x = 1; x <= input->N; x++) {
-                if (!has_point[y][x] || has_initial_point[y][x]) continue;
+                if (!has_point[y][x] || input->has_initial_point[y][x]) continue;
                 auto u64 = children[y][x][0].data64;
                 auto u = r2i[u64];
                 for (int i = 1; i < num_children[y][x]; i++) {
@@ -936,29 +923,28 @@ struct State {
             Rect r; r.data64 = i2r[u];
             ans.push_back(r);
             for (auto v : graph[u]) {
-                assert(indeg[v] > 0);
                 indeg[v]--;
                 if (indeg[v] == 0) qu.push(v);
             }
         }
-        return Output(ans, eval(), -1, -1, -1, -1.0);
+        return Output(ans, eval(), -1, -1.0);
     }
 
     // pred に従い次に選択すべき長方形を候補から貪欲に選択する
     template<typename F>
-    std::pair<bool, Rect> choose_greedy(const F& pred) const {
-        if (!num_cands) return { false, Rect() };
+    Rect choose_greedy(const F& pred) const {
+        if (!num_cands) return 0;
         Rect best = cand_rects[0];
         for (int i = 1; i < num_cands; i++) {
             if (!pred(best, cand_rects[i])) best = cand_rects[i];
         }
-        return { true, best };
+        return best;
     }
 
     template<typename F>
     bool solve_greedy(const F& pred) {
         while (num_cands) {
-            auto [_, rect] = choose_greedy(pred);
+            auto rect = choose_greedy(pred);
             auto ok = apply_move(rect);
             if (!ok) return false;
         }
@@ -998,7 +984,7 @@ Output solve(InputPtr input) {
     };
 
     // 焼く
-    int outer_loop = 0, max_cands = state.max_cands, max_children = state.max_children;
+    int outer_loop = 0;
     constexpr double end_time = 4900;
     double start_time = timer.elapsed_ms(), now_time;
     while ((now_time = timer.elapsed_ms()) < end_time) {
@@ -1009,9 +995,6 @@ Output solve(InputPtr input) {
         bool ok = nstate.solve_greedy(f);
         if (!ok) continue;
         int now_score = nstate.eval();
-
-        chmax(max_cands, nstate.max_cands);
-        chmax(max_children, nstate.max_children);
 
         int diff = now_score - prev_score;
         double temp = get_temp(10000.0, 0.0, now_time - start_time, end_time - start_time);
@@ -1030,8 +1013,6 @@ Output solve(InputPtr input) {
 
     auto output = best_state.create_output();
     output.elapsed_ms = timer.elapsed_ms();
-    output.max_cands = max_cands;
-    output.max_children = max_children;
     output.outer_loop = outer_loop;
 
     return output;
@@ -1064,7 +1045,7 @@ void batch_test(int seed_begin = 0, int num_seed = 100, int step = 1) {
                 mtx.lock();
                 out << res;
                 scores[seed] = res.score;
-                cerr << format("seed=%d, score=%d, max_cands=%d, max_children=%d, outer_loop=%d, elapsed_ms=%f\n", seed, scores[seed], res.max_cands, res.max_children, res.outer_loop, res.elapsed_ms);
+                cerr << format("seed=%d, score=%d, outer_loop=%d, elapsed_ms=%f\n", seed, scores[seed], res.outer_loop, res.elapsed_ms);
                 mtx.unlock();
             }
             });
@@ -1097,7 +1078,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
 #else
     auto input = std::make_shared<Input>(in);
     auto ans = solve(input);
-    dump(ans.score, ans.max_cands, ans.max_children, ans.outer_loop, ans.elapsed_ms);
+    dump(ans.score, ans.outer_loop, ans.elapsed_ms);
     out << ans;
 #endif
 
