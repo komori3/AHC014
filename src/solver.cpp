@@ -419,6 +419,20 @@ struct State {
 
     State() {}
     State(InputPtr input) : input(input), N(input->N) {
+
+        dump(sizeof(State));
+        dump(sizeof(has_point));
+        dump(sizeof(num_children));
+        dump(sizeof(children));
+        dump(sizeof(num_parents));
+        dump(sizeof(parents));
+        dump(sizeof(next_point));
+        dump(sizeof(used));
+        dump(sizeof(used_bit));
+        dump(sizeof(cand_dirs));
+        dump(sizeof(cand_rects));
+        exit(1);
+
         // 外周は true
         for (int y = 0; y < 64; y++) {
             for (int x = 0; x < 64; x++) {
@@ -643,20 +657,17 @@ struct State {
     }
 
     Rect check_p1(const Point& p1, int d) const {
+
         int nd = (d + 2) & 7;
-        Point p2;
-        {
-            auto [x, y] = p1.next(nd);
-            p2 = next_point[nd][y][x];
-            if (!is_inside(p2)) return 0;
-        }
+        Point p2 = p1.next(nd);
+        p2 = next_point[nd][p2.y][p2.x];
+        if (!is_inside(p2)) return 0;
+
         nd = (nd + 2) & 7;
-        Point p3;
-        {
-            auto [x, y] = p2.next(nd);
-            p3 = next_point[nd][y][x];
-            if (!is_inside(p3)) return 0;
-        }
+        Point p3 = p2.next(nd);
+        p3 = next_point[nd][p3.y][p3.x];
+        if (!is_inside(p3)) return 0;
+
         Point p0(p1.x + p3.x - p2.x, p1.y + p3.y - p2.y);
         if (!is_inside(p0) || has_point[p0.y][p0.x]) return 0;
         // p0->p1, p0->p3 間に印はない
@@ -970,7 +981,7 @@ Output solve(InputPtr input) {
 
     State init_state(input);
 
-    State state;
+    State state, nstate;
     while (true) {
         state = init_state;
         bool ok = state.solve_greedy(f);
@@ -990,7 +1001,7 @@ Output solve(InputPtr input) {
     double start_time = timer.elapsed_ms(), now_time;
     while ((now_time = timer.elapsed_ms()) < end_time) {
 
-        auto nstate(state);
+        memcpy(&nstate, &state, sizeof(State));
         int prev_score = nstate.eval();
         nstate.random_remove(rnd);
         bool ok = nstate.solve_greedy(f);
@@ -1002,9 +1013,10 @@ Output solve(InputPtr input) {
         double prob = exp(diff / temp);
 
         if (rnd.next_double() < prob) {
-            state = nstate;
+            memcpy(&state, &nstate, sizeof(State));
             if (chmax(best_score, now_score)) {
-                best_state = state;
+                memcpy(&best_state, &state, sizeof(State));
+                //best_state = state;
                 //dump(best_score);
             }
         }
@@ -1065,8 +1077,8 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
 #endif
 
 #ifdef _MSC_VER
-    std::ifstream ifs(R"(tools_win\in\0000.txt)");
-    std::ofstream ofs(R"(tools_win\out\0000.txt)");
+    std::ifstream ifs(R"(tools_win\in\0005.txt)");
+    std::ofstream ofs(R"(tools_win\out\0005.txt)");
     std::istream& in = ifs;
     std::ostream& out = ofs;
 #else
