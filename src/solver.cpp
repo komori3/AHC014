@@ -918,7 +918,7 @@ struct State {
                 if (!has_point[y][x] || has_initial_point[y][x]) continue;
                 auto u64 = children[y][x][0].data64;
                 auto u = r2i[u64];
-                for (int i = 1; i < children[y][x].size(); i++) {
+                for (int i = 1; i < num_children[y][x]; i++) {
                     auto v64 = children[y][x][i].data64;
                     auto v = r2i[v64];
                     graph[u].push_back(v);
@@ -976,7 +976,7 @@ Output solve(InputPtr input) {
 
     // 貪欲のタイブレークとして randomness を加えている
     auto f = [&input, &rnd](const Rect& lhs, const Rect& rhs) {
-        return 
+        return
             std::make_pair(perimeter(lhs), rnd.next_int())
             < std::make_pair(perimeter(rhs), rnd.next_int());
     };
@@ -1097,9 +1097,8 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
 #else
     auto input = std::make_shared<Input>(in);
     auto ans = solve(input);
-    dump(ans.score);
+    dump(ans.score, ans.max_cands, ans.max_children, ans.outer_loop, ans.elapsed_ms);
     out << ans;
-    dump(ans.elapsed_ms);
 #endif
 
     return 0;
