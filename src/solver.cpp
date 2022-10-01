@@ -410,7 +410,8 @@ struct State {
     // 1. r[1], r[2], r[3] は p よりも前に印を付けられていなければならない
     // 2. p が他の長方形 r の辺上にあるとき、r[0] は p よりも前に印を付けられていなければならない（高々 2 つ)
     array<array<vector<Rect>, 64>, 64> children;
-    array<array<vector<Point>, 64>, 64> parents;
+    array<array<int, 64>, 64> num_parents;
+    array<array<array<Point, 5>, 64>, 64> parents;
 
     // (x,y) から d 方向に進んで初めて印に衝突する印
     array<array<array<Point, 64>, 64>, 8> next_point;
@@ -449,6 +450,9 @@ struct State {
             has_initial_point[y][x] = true;
             has_point[y][x] = true;
         }
+
+        std::memset(num_parents.data(), 0, sizeof(int) * 64 * 64);
+        std::memset(parents.data(), 0, sizeof(Point) * 64 * 64 * 5);
 
         std::memset(used.data(), 0, sizeof(Rect) * 64 * 64 * 8);
         std::memset(used_bit.data(), 0, sizeof(uint64_t) * 4 * 128);
@@ -798,7 +802,8 @@ struct State {
             if (has_initial_point[y][x]) continue;
             children[y][x].push_back(rect);
             if (i) {
-                parents[ny][nx].emplace_back(x, y);
+                int& nump = num_parents[ny][nx];
+                parents[ny][nx][nump++] = { x, y };
             }
         }
         // 点が他の長方形の辺上にある
@@ -808,7 +813,8 @@ struct State {
             if (r1.data64 && r1.data64 == r2.data64) {
                 auto [x, y] = r1[0];
                 children[y][x].push_back(rect);
-                parents[ny][nx].emplace_back(x, y);
+                int& nump = num_parents[ny][nx];
+                parents[ny][nx][nump++] = { x, y };
             }
         }
         toggle_rect(rect);
@@ -830,7 +836,8 @@ struct State {
             remove_point_dfs(np);
         }
         auto& rect = children[y][x][0];
-        for (auto [px, py] : parents[y][x]) {
+        for (int i = 0; i < num_parents[y][x]; i++) {
+            auto [px, py] = parents[y][x][i];
             auto& pcs = children[py][px];
             auto it = std::find(pcs.begin(), pcs.end(), rect);
             if (it != pcs.end()) {
@@ -852,7 +859,7 @@ struct State {
         toggle_rect(rect);
         rect.data64 = 0;
         children[y][x].clear();
-        parents[y][x].clear();
+        num_parents[y][x] = 0;
     }
 
     void remove_rect_naive(const Rect& rect) {
@@ -955,7 +962,7 @@ Output solve(InputPtr input) {
 
     // 貪欲のタイブレークとして randomness を加えている
     auto f = [&input, &rnd](const Rect& lhs, const Rect& rhs) {
-        return
+        return 
             std::make_pair(perimeter(lhs), rnd.next_int())
             < std::make_pair(perimeter(rhs), rnd.next_int());
     };
@@ -993,7 +1000,7 @@ Output solve(InputPtr input) {
         int now_score = nstate.eval();
 
         int diff = now_score - prev_score;
-        double temp = get_temp(50.0, 0.0, now_time - start_time, end_time - start_time);
+        double temp = get_temp(10000.0, 0.0, now_time - start_time, end_time - start_time);
         double prob = exp(diff / temp);
 
         if (rnd.next_double() < prob) {
@@ -1005,7 +1012,7 @@ Output solve(InputPtr input) {
         }
         outer_loop++;
     }
-    dump(outer_loop);
+    //dump(outer_loop);
 
     auto output = best_state.create_output();
     output.elapsed_ms = timer.elapsed_ms();
@@ -1059,8 +1066,8 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
 #endif
 
 #ifdef _MSC_VER
-    std::ifstream ifs(R"(tools_win\in\0005.txt)");
-    std::ofstream ofs(R"(tools_win\out\0005.txt)");
+    std::ifstream ifs(R"(tools_win\in\0000.txt)");
+    std::ofstream ofs(R"(tools_win\out\0000.txt)");
     std::istream& in = ifs;
     std::ostream& out = ofs;
 #else
